@@ -53,8 +53,20 @@
 
 ## 快速开始
 
-### 1. 同步项目依赖
+### 方式一：一行命令免安装直接运行 (uvx / pipx)
+无需手动克隆代码或配置环境：
 ```bash
+# 使用 uvx 运行
+uvx chiv-mini-agent
+
+# 或者全局安装到系统
+uv tool install chiv-mini-agent
+```
+
+### 方式二：从源码克隆运行
+```bash
+git clone https://github.com/chenzh659/mini-agent.git
+cd mini-agent
 uv sync --all-groups
 ```
 
