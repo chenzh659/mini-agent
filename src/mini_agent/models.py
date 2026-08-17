@@ -96,3 +96,36 @@ class RunShellInput(BaseModel):
         max_length=1000,
         description="Shell command line string to execute in workspace.",
     )
+
+
+class WriteFileInput(BaseModel):
+    """Input parameters for the write_file tool."""
+
+    path: str = Field(
+        ...,
+        min_length=1,
+        description="Relative path of the file to create or overwrite.",
+    )
+    content: str = Field(
+        ...,
+        description="Full text content to write into the file.",
+    )
+
+
+class EditFileInput(BaseModel):
+    """Input parameters for the edit_file tool."""
+
+    path: str = Field(
+        ...,
+        min_length=1,
+        description="Relative path of the file to edit.",
+    )
+    target_content: str = Field(
+        ...,
+        min_length=1,
+        description="Exact snippet of code/text in the file to be replaced.",
+    )
+    replacement_content: str = Field(
+        ...,
+        description="New replacement text to substitute for target_content.",
+    )

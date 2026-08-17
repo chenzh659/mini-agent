@@ -8,12 +8,14 @@ from pydantic import ValidationError
 from mini_agent.llm import LLMClient, get_system_prompt, get_tool_definitions
 from mini_agent.models import (
     AgentConfig,
+    EditFileInput,
     ListFilesInput,
     ReadFileInput,
     RunShellInput,
     ToolResult,
+    WriteFileInput,
 )
-from mini_agent.tools.filesystem import list_files, read_file
+from mini_agent.tools.filesystem import edit_file, list_files, read_file, write_file
 from mini_agent.tools.shell import check_command_safety, run_shell
 
 
@@ -112,6 +114,28 @@ class Agent:
                     ok=False,
                     content="",
                     error=f"list_files 参数校验失败: {exc}",
+                )
+
+        if name == "write_file":
+            try:
+                inp = WriteFileInput(**args)
+                return write_file(inp, workspace_root=self.config.workspace_root)
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"write_file 参数校验失败: {exc}",
+                )
+
+        if name == "edit_file":
+            try:
+                inp = EditFileInput(**args)
+                return edit_file(inp, workspace_root=self.config.workspace_root)
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"edit_file 参数校验失败: {exc}",
                 )
 
         if name == "run_shell":

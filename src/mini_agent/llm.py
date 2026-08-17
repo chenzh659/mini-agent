@@ -52,15 +52,18 @@ class LLMClient(Protocol):
 def get_system_prompt(workspace_root: Path) -> str:
     """Generate system instructions for the Agent."""
     return (
-        f"你是一个运行在工作区 '{workspace_root.as_posix()}' 的本地开发助手 (mini-agent)。\n"
-        "请严格遵守以下规则：\n"
-        "1. 不了解项目结构时，优先调用 `list_files` 了解目录布局；"
-        "需要查看具体文件时才调用 `read_file`，不要盲目扫描所有文件。\n"
-        "2. 仅在确有必要时使用 `run_shell` 工具，优先选择安全只读命令（如 pytest、git status）。\n"
-        "3. 所有文件路径必须相对于工作区根目录；如果工具执行失败，请解释原因或换用安全方式，"
-        "严禁编造未读取的文件内容。\n"
-        "4. 工具执行完毕后，必须基于真实结果使用中文回答用户，简洁说明做了什么。\n"
-        "5. 当前 MVP 阶段没有文件写入工具，严禁声称已修改或创建了任何文件。"
+        f"你是一个运行在工作区 '{workspace_root.as_posix()}' 的智能开发助手 (mini-agent)。\n"
+        "你可以使用以下工具进行开发：\n"
+        "- `list_files`：查看目录结构与文件布局；\n"
+        "- `read_file`：查看指定文件的完整内容；\n"
+        "- `edit_file`：精准替换目标代码片段（首选代码修改方式）；\n"
+        "- `write_file`：创建新文件或全量写入小文件；\n"
+        "- `run_shell`：执行测试、检查或受控终端命令。\n\n"
+        "请严格遵守以下开发准则：\n"
+        "1. 修改代码前，务必先调用 `read_file` 查看最新代码，确保上下文完全一致；\n"
+        "2. 修改现有代码时，优先使用 `edit_file` 进行精准局部替换，提供唯一的 `target_content`；\n"
+        "3. 仅在创建全新文件时使用 `write_file`；\n"
+        "4. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
     )
 
 
@@ -103,6 +106,52 @@ def get_tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
             "strict": False,
+        },
+        {
+            "type": "function",
+            "name": "edit_file",
+            "description": "在已有文件中精准搜索 target_content 并替换为 replacement_content。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "要修改的文件相对路径。",
+                    },
+                    "target_content": {
+                        "type": "string",
+                        "description": "文件中要被替换的原代码片段（必须唯一匹配）。",
+                    },
+                    "replacement_content": {
+                        "type": "string",
+                        "description": "替换后的新代码片段。",
+                    },
+                },
+                "required": ["path", "target_content", "replacement_content"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "write_file",
+            "description": "创建新文件或覆盖写入完整内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "要创建或覆盖写入的文件相对路径。",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要写入文件的完整文本内容。",
+                    },
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+            "strict": True,
         },
         {
             "type": "function",

@@ -4,7 +4,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mini_agent.models import ListFilesInput, ReadFileInput, ToolResult
+from mini_agent.models import (
+    EditFileInput,
+    ListFilesInput,
+    ReadFileInput,
+    ToolResult,
+    WriteFileInput,
+)
 
 IGNORED_NAMES = {
     ".git",
@@ -266,4 +272,127 @@ def list_files(
         content=content,
         error=None,
         metadata=metadata,
+    )
+
+
+def write_file(input_data: WriteFileInput, workspace_root: Path) -> ToolResult:
+    """Safely write full content to a file within workspace."""
+    resolved_path, error = resolve_relative_path(workspace_root, input_data.path)
+    if error or resolved_path is None:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=error,
+            metadata={"path": input_data.path},
+        )
+
+    try:
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(resolved_path, mode="w", encoding="utf-8") as f:
+            f.write(input_data.content)
+    except OSError as exc:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"写入文件失败 '{input_data.path}': {exc}",
+            metadata={"path": input_data.path},
+        )
+
+    size = len(input_data.content.encode("utf-8"))
+    return ToolResult(
+        ok=True,
+        content=f"已成功写入文件 '{input_data.path}' ({size} 字节)。",
+        error=None,
+        metadata={"path": input_data.path, "bytes_written": size},
+    )
+
+
+def edit_file(input_data: EditFileInput, workspace_root: Path) -> ToolResult:
+    """Safely replace a unique occurrence of target_content with replacement_content."""
+    resolved_path, error = resolve_relative_path(workspace_root, input_data.path)
+    if error or resolved_path is None:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=error,
+            metadata={"path": input_data.path},
+        )
+
+    if not resolved_path.exists():
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"目标文件不存在: '{input_data.path}'",
+            metadata={"path": input_data.path},
+        )
+
+    if not resolved_path.is_file():
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"路径不是普通文件: '{input_data.path}'",
+            metadata={"path": input_data.path},
+        )
+
+    try:
+        with open(resolved_path, encoding="utf-8", errors="strict") as f:
+            original_content = f.read()
+    except UnicodeDecodeError:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"文件不是 UTF-8 编码文本: '{input_data.path}'",
+            metadata={"path": input_data.path},
+        )
+    except OSError as exc:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"无法读取文件 '{input_data.path}': {exc}",
+            metadata={"path": input_data.path},
+        )
+
+    if input_data.target_content not in original_content:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=(
+                f"在文件 '{input_data.path}' 中未找到目标代码片段。"
+                "请先使用 read_file 重新确认文件当前最新内容。"
+            ),
+            metadata={"path": input_data.path},
+        )
+
+    match_count = original_content.count(input_data.target_content)
+    if match_count > 1:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=(
+                f"在文件 '{input_data.path}' 中找到了 {match_count} 处匹配的目标代码。"
+                "匹配不唯一，请包含更多上下文行以确保精准替换。"
+            ),
+            metadata={"path": input_data.path, "match_count": match_count},
+        )
+
+    new_content = original_content.replace(
+        input_data.target_content, input_data.replacement_content, 1
+    )
+
+    try:
+        with open(resolved_path, mode="w", encoding="utf-8") as f:
+            f.write(new_content)
+    except OSError as exc:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"保存修改失败 '{input_data.path}': {exc}",
+            metadata={"path": input_data.path},
+        )
+
+    return ToolResult(
+        ok=True,
+        content=f"已成功修改文件 '{input_data.path}'。",
+        error=None,
+        metadata={"path": input_data.path},
     )

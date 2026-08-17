@@ -5,8 +5,22 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from mini_agent.models import AgentConfig, ListFilesInput, ReadFileInput, ToolResult
-from mini_agent.tools.filesystem import list_files, read_file, resolve_relative_path, truncate_text
+from mini_agent.models import (
+    AgentConfig,
+    EditFileInput,
+    ListFilesInput,
+    ReadFileInput,
+    ToolResult,
+    WriteFileInput,
+)
+from mini_agent.tools.filesystem import (
+    edit_file,
+    list_files,
+    read_file,
+    resolve_relative_path,
+    truncate_text,
+    write_file,
+)
 
 
 class TestDataModels:
@@ -36,6 +50,14 @@ class TestDataModels:
             ListFilesInput(max_depth=0)
         with pytest.raises(ValidationError):
             ListFilesInput(max_depth=6)
+
+    def test_write_file_input_validation(self) -> None:
+        with pytest.raises(ValidationError):
+            WriteFileInput(path="", content="hello")
+
+    def test_edit_file_input_validation(self) -> None:
+        with pytest.raises(ValidationError):
+            EditFileInput(path="a.py", target_content="", replacement_content="b")
 
     def test_tool_result_structure(self) -> None:
         res = ToolResult(ok=True, content="test output")
@@ -197,6 +219,69 @@ class TestListFilesTool:
         result = list_files(ListFilesInput(path="empty_dir"), workspace_root=tmp_path)
         assert result.ok is True
         assert "(目录为空)" in result.content
+
+
+class TestWriteFileTool:
+    """Test write_file tool behavior."""
+
+    def test_write_new_file_and_nested_parent(self, tmp_path: Path) -> None:
+        inp = WriteFileInput(path="sub/nested/new.py", content="print('created')")
+        result = write_file(inp, workspace_root=tmp_path)
+        assert result.ok is True
+        assert "成功写入" in result.content
+        target = tmp_path / "sub" / "nested" / "new.py"
+        assert target.exists()
+        assert target.read_text(encoding="utf-8") == "print('created')"
+
+    def test_write_file_outside_workspace_rejected(self, tmp_path: Path) -> None:
+        inp = WriteFileInput(path="../outside.py", content="evil")
+        result = write_file(inp, workspace_root=tmp_path)
+        assert result.ok is False
+        assert "越界" in (result.error or "")
+
+
+class TestEditFileTool:
+    """Test edit_file tool behavior."""
+
+    def test_edit_existing_file_single_match(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "calc.py"
+        file_path.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
+        inp = EditFileInput(
+            path="calc.py",
+            target_content="    return a - b",
+            replacement_content="    return a + b",
+        )
+        result = edit_file(inp, workspace_root=tmp_path)
+        assert result.ok is True
+        assert "成功修改" in result.content
+        assert file_path.read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
+
+    def test_edit_file_target_not_found(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "demo.py"
+        file_path.write_text("x = 1", encoding="utf-8")
+
+        inp = EditFileInput(
+            path="demo.py",
+            target_content="y = 2",
+            replacement_content="y = 3",
+        )
+        result = edit_file(inp, workspace_root=tmp_path)
+        assert result.ok is False
+        assert "未找到目标代码片段" in (result.error or "")
+
+    def test_edit_file_ambiguous_matches_rejected(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "dup.py"
+        file_path.write_text("val = 1\nval = 1\n", encoding="utf-8")
+
+        inp = EditFileInput(
+            path="dup.py",
+            target_content="val = 1",
+            replacement_content="val = 2",
+        )
+        result = edit_file(inp, workspace_root=tmp_path)
+        assert result.ok is False
+        assert "匹配不唯一" in (result.error or "")
 
 
 class TestTruncateHelper:

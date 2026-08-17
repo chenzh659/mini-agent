@@ -299,3 +299,53 @@ class TestAgentLoop:
         answer = agent.step("创建文件")
         assert "拒绝" in answer
         assert not (tmp_path / "dangerous.txt").exists()
+
+    def test_write_file_turn(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="write_file",
+                            call_id="call_write_1",
+                            arguments='{"path": "hello.py", "content": "print(\'hello\')"}',
+                        )
+                    ]
+                ),
+                LLMResponse(text="已成功创建 hello.py 文件。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("创建 hello.py")
+        assert "创建" in answer
+        assert (tmp_path / "hello.py").exists()
+        assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello')"
+
+    def test_edit_file_turn(self, tmp_path: Path) -> None:
+        (tmp_path / "calc.py").write_text("def sub(a, b):\n    return a - b\n", encoding="utf-8")
+
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="edit_file",
+                            call_id="call_edit_1",
+                            arguments=(
+                                '{"path": "calc.py", "target_content": "def sub", '
+                                '"replacement_content": "def add"}'
+                            ),
+                        )
+                    ]
+                ),
+                LLMResponse(text="已将函数名修改为 add。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("修改函数名")
+        assert "修改" in answer
+        assert "def add" in (tmp_path / "calc.py").read_text(encoding="utf-8")

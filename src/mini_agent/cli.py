@@ -82,6 +82,18 @@ class RichAgentEventListener(AgentEventListener):
                 f"  [bold cyan]⚡ Tool: list_files[/bold cyan] "
                 f"[dim](路径: {path}, 深度: {depth})[/dim]"
             )
+        elif tool_name == "write_file":
+            path = arguments.get("path", "")
+            chars = len(arguments.get("content", ""))
+            self.console.print(
+                f"  [bold cyan]⚡ Tool: write_file[/bold cyan] "
+                f"[dim](写入: {path}, {chars} 字符)[/dim]"
+            )
+        elif tool_name == "edit_file":
+            path = arguments.get("path", "")
+            self.console.print(
+                f"  [bold cyan]⚡ Tool: edit_file[/bold cyan] [dim](修改: {path})[/dim]"
+            )
         elif tool_name == "run_shell":
             cmd = arguments.get("command", "")
             self.console.print(
@@ -109,6 +121,8 @@ class RichAgentEventListener(AgentEventListener):
             metadata_parts: list[str] = []
             if "size_bytes" in result.metadata:
                 metadata_parts.append(f"{result.metadata['size_bytes']} 字节")
+            if "bytes_written" in result.metadata:
+                metadata_parts.append(f"{result.metadata['bytes_written']} 字节写入")
             if "total_entries" in result.metadata:
                 metadata_parts.append(f"{result.metadata['total_entries']} 项")
             if "exit_code" in result.metadata and self.verbose:
@@ -153,6 +167,16 @@ def render_help(console: Console) -> None:
         "read_file",
         "读取 UTF-8 文件内容",
         "工作区相对路径沙箱，单文件上限 100 KiB",
+    )
+    tools_table.add_row(
+        "edit_file",
+        "精准修改文件代码片段",
+        "唯一匹配 target_content 并替换为 replacement_content",
+    )
+    tools_table.add_row(
+        "write_file",
+        "创建新文件或覆盖写入",
+        "工作区相对路径沙箱，自动创建父级目录",
     )
     tools_table.add_row(
         "run_shell",

@@ -131,6 +131,8 @@ uv run mini-agent --verbose
 | :--- | :--- | :--- | :--- |
 | **`list_files`** | `path` (默认 `.`), `max_depth` (1~5) | 列出工作区目录与文件 | 自动忽略 `.git`、`.venv`、`__pycache__`；跳过越界符号链接；上限 500 项。 |
 | **`read_file`** | `path` (相对路径) | 读取文本文件内容 | 仅允许工作区内相对路径（拦截绝对路径与 `..` 越界）；仅读取 UTF-8 文本；单文件大小上限 100 KiB。 |
+| **`edit_file`** | `path`, `target_content`, `replacement_content` | 精准局部修改代码 | 必须在文件中唯一匹配 `target_content`，避免歧义替换；工作区相对路径沙箱。 |
+| **`write_file`** | `path`, `content` | 创建新文件或全量写入 | 工作区相对路径沙箱，自动创建父级目录。 |
 | **`run_shell`** | `command` (Shell 字符串) | 执行工作区受控 Shell 指令 | 拦截 `rm -rf`、`mkfs`、`sudo`、`cat /etc/passwd` 等高危命令；非白名单命令强制提示用户确认；超时（默认 30s）强杀进程组。 |
 
 ---
