@@ -1,0 +1,224 @@
+"""Agent loop, history management, and tool dispatching."""
+
+import json
+from typing import Any, Protocol
+
+from pydantic import ValidationError
+
+from mini_agent.llm import LLMClient, get_system_prompt, get_tool_definitions
+from mini_agent.models import (
+    AgentConfig,
+    ListFilesInput,
+    ReadFileInput,
+    RunShellInput,
+    ToolResult,
+)
+from mini_agent.tools.filesystem import list_files, read_file
+from mini_agent.tools.shell import check_command_safety, run_shell
+
+
+class AgentEventListener(Protocol):
+    """Event listener protocol for monitoring agent steps."""
+
+    def on_turn_start(self, user_input: str) -> None:
+        """Called when a user turn begins."""
+        ...
+
+    def on_model_start(self) -> None:
+        """Called before sending request to LLM."""
+        ...
+
+    def on_tool_start(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        """Called before executing a tool."""
+        ...
+
+    def on_tool_confirm(self, command: str) -> bool:
+        """Prompt user for confirmation when running non-allowlisted shell commands."""
+        ...
+
+    def on_tool_finished(self, tool_name: str, result: ToolResult) -> None:
+        """Called after tool execution finishes."""
+        ...
+
+    def on_turn_finished(self, response: str) -> None:
+        """Called when agent turn is fully completed."""
+        ...
+
+
+class Agent:
+    """Core Agent coordinating LLM interactions and tool execution."""
+
+    def __init__(
+        self,
+        config: AgentConfig,
+        llm_client: LLMClient,
+        listener: AgentEventListener | None = None,
+    ) -> None:
+        self.config = config
+        self.llm_client = llm_client
+        self.listener = listener
+        self.tools = get_tool_definitions()
+
+        # Initialize conversation history with system prompt
+        self.history: list[dict[str, Any]] = [
+            {"role": "system", "content": get_system_prompt(self.config.workspace_root)}
+        ]
+
+    def _execute_tool(self, name: str, raw_arguments: str) -> ToolResult:
+        """Parse arguments and dispatch execution to the corresponding tool."""
+        # Parse JSON
+        try:
+            args = json.loads(raw_arguments) if raw_arguments.strip() else {}
+        except json.JSONDecodeError as exc:
+            return ToolResult(
+                ok=False,
+                content="",
+                error=f"工具参数不是合法的 JSON 字符串: {exc}",
+            )
+
+        if not isinstance(args, dict):
+            return ToolResult(
+                ok=False,
+                content="",
+                error=f"工具参数必须为 JSON 对象 (dict)，收到: {type(args).__name__}",
+            )
+
+        # Dispatch
+        if name == "read_file":
+            try:
+                inp = ReadFileInput(**args)
+                return read_file(
+                    inp,
+                    workspace_root=self.config.workspace_root,
+                    max_output_chars=self.config.max_output_chars,
+                )
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"read_file 参数校验失败: {exc}",
+                )
+
+        if name == "list_files":
+            try:
+                inp = ListFilesInput(**args)
+                return list_files(
+                    inp,
+                    workspace_root=self.config.workspace_root,
+                    max_output_chars=self.config.max_output_chars,
+                )
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"list_files 参数校验失败: {exc}",
+                )
+
+        if name == "run_shell":
+            try:
+                inp = RunShellInput(**args)
+                is_blocked, req_conf, reason = check_command_safety(inp.command)
+                if is_blocked:
+                    return ToolResult(
+                        ok=False,
+                        content="",
+                        error=reason,
+                        metadata={"blocked": True, "command": inp.command},
+                    )
+
+                if req_conf:
+                    confirmed = False
+                    if self.listener and hasattr(self.listener, "on_tool_confirm"):
+                        confirmed = self.listener.on_tool_confirm(inp.command)
+
+                    if not confirmed:
+                        return ToolResult(
+                            ok=False,
+                            content="",
+                            error=f"用户拒绝执行命令: '{inp.command}'",
+                            metadata={"user_cancelled": True, "command": inp.command},
+                        )
+
+                return run_shell(
+                    inp,
+                    workspace_root=self.config.workspace_root,
+                    confirmed=True,
+                    timeout_seconds=self.config.shell_timeout_seconds,
+                    max_output_chars=self.config.max_output_chars,
+                )
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"run_shell 参数校验失败: {exc}",
+                )
+
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"未知的工具名称: '{name}'",
+        )
+
+    def step(self, user_input: str) -> str:
+        """Run a single user turn in the agent loop."""
+        cleaned_input = user_input.strip()
+        if not cleaned_input:
+            return ""
+
+        if self.listener and hasattr(self.listener, "on_turn_start"):
+            self.listener.on_turn_start(cleaned_input)
+
+        self.history.append({"role": "user", "content": cleaned_input})
+
+        for _ in range(self.config.max_tool_rounds):
+            if self.listener and hasattr(self.listener, "on_model_start"):
+                self.listener.on_model_start()
+
+            response = self.llm_client.create_response(
+                self.history,
+                self.tools,
+                model=self.config.model,
+            )
+
+            # Append raw response items or assistant message to history
+            if response.raw_output:
+                for out_item in response.raw_output:
+                    self.history.append(out_item)
+            elif response.text:
+                self.history.append({"role": "assistant", "content": response.text})
+
+            # If no function calls requested, we reached the final answer
+            if not response.function_calls:
+                final_answer = response.text or "(模型未返回文本内容)"
+                if self.listener and hasattr(self.listener, "on_turn_finished"):
+                    self.listener.on_turn_finished(final_answer)
+                return final_answer
+
+            # Process function calls in serial order
+            for call in response.function_calls:
+                try:
+                    args_dict = json.loads(call.arguments) if call.arguments.strip() else {}
+                except Exception:
+                    args_dict = {"raw": call.arguments}
+
+                if self.listener and hasattr(self.listener, "on_tool_start"):
+                    self.listener.on_tool_start(call.name, args_dict)
+
+                result = self._execute_tool(call.name, call.arguments)
+
+                if self.listener and hasattr(self.listener, "on_tool_finished"):
+                    self.listener.on_tool_finished(call.name, result)
+
+                # Append function call output to history
+                self.history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": result.model_dump_json(),
+                    }
+                )
+
+        timeout_msg = "工具调用轮数已达到上限，请缩小任务范围后重试。"
+        if self.listener and hasattr(self.listener, "on_turn_finished"):
+            self.listener.on_turn_finished(timeout_msg)
+        return timeout_msg

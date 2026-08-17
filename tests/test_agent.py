@@ -1,0 +1,301 @@
+"""Unit tests for Agent loop and Fake LLM client integration."""
+
+from pathlib import Path
+from typing import Any
+
+from mini_agent.agent import Agent, AgentEventListener
+from mini_agent.llm import (
+    FunctionCall,
+    LLMClient,
+    LLMResponse,
+    OpenAIChatCompletionsClient,
+)
+from mini_agent.models import AgentConfig, ToolResult
+
+
+class FakeLLMClient(LLMClient):
+    """Deterministic Fake LLM Client for testing."""
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self.responses = list(responses)
+        self.call_history: list[list[dict[str, Any]]] = []
+
+    def create_response(
+        self,
+        history: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str = "gpt-4o-mini",
+    ) -> LLMResponse:
+        self.call_history.append(list(history))
+        if not self.responses:
+            return LLMResponse(text="[FakeLLM: No more responses configured]")
+        return self.responses.pop(0)
+
+
+class RecordingEventListener(AgentEventListener):
+    """Event listener that records all events."""
+
+    def __init__(self, confirm_decision: bool = True) -> None:
+        self.events: list[tuple[str, Any]] = []
+        self.confirm_decision = confirm_decision
+
+    def on_turn_start(self, user_input: str) -> None:
+        self.events.append(("turn_start", user_input))
+
+    def on_model_start(self) -> None:
+        self.events.append(("model_start", None))
+
+    def on_tool_start(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        self.events.append(("tool_start", (tool_name, arguments)))
+
+    def on_tool_confirm(self, command: str) -> bool:
+        self.events.append(("tool_confirm", command))
+        return self.confirm_decision
+
+    def on_tool_finished(self, tool_name: str, result: ToolResult) -> None:
+        self.events.append(("tool_finished", (tool_name, result)))
+
+    def on_turn_finished(self, response: str) -> None:
+        self.events.append(("turn_finished", response))
+
+
+class TestOpenAIChatCompletionsAdapter:
+    """Test message and tool conversion in OpenAIChatCompletionsClient."""
+
+    def test_message_conversion(self) -> None:
+        client = OpenAIChatCompletionsClient(api_key="fake-key")
+        history = [
+            {"role": "system", "content": "You are assistant."},
+            {"role": "user", "content": "Hello"},
+            {"type": "function_call_output", "call_id": "call_1", "output": '{"ok": true}'},
+            {"role": "assistant", "content": "Done"},
+        ]
+        converted = client._convert_messages(history)
+        assert len(converted) == 4
+        assert converted[0] == {"role": "system", "content": "You are assistant."}
+        assert converted[1] == {"role": "user", "content": "Hello"}
+        assert converted[2] == {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'}
+        assert converted[3] == {"role": "assistant", "content": "Done"}
+
+    def test_tools_conversion(self) -> None:
+        client = OpenAIChatCompletionsClient(api_key="fake-key")
+        raw_tools = [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read file",
+                "parameters": {"type": "object"},
+            }
+        ]
+        converted = client._convert_tools(raw_tools)
+        assert len(converted) == 1
+        assert "function" in converted[0]
+        assert converted[0]["function"]["name"] == "read_file"
+
+
+class TestAgentLoop:
+    """Test full agent loop scenarios with Fake LLM."""
+
+    def test_direct_text_response_no_tools(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient([LLMResponse(text="你好！我是助手。")])
+        config = AgentConfig(workspace_root=tmp_path)
+        listener = RecordingEventListener()
+        agent = Agent(config=config, llm_client=fake_llm, listener=listener)
+
+        answer = agent.step("你好")
+        assert answer == "你好！我是助手。"
+        assert len(fake_llm.call_history) == 1
+        assert len(fake_llm.call_history[0]) == 2
+        assert fake_llm.call_history[0][1]["content"] == "你好"
+
+    def test_list_files_then_final_answer(self, tmp_path: Path) -> None:
+        (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
+
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="list_files",
+                            call_id="call_list_1",
+                            arguments='{"path": "."}',
+                        )
+                    ]
+                ),
+                LLMResponse(text="项目包含入口文件 main.py。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        listener = RecordingEventListener()
+        agent = Agent(config=config, llm_client=fake_llm, listener=listener)
+
+        answer = agent.step("项目中有什么文件？")
+        assert answer == "项目包含入口文件 main.py。"
+        assert len(fake_llm.call_history) == 2
+
+        second_history = fake_llm.call_history[1]
+        tool_outputs = [
+            item for item in second_history if item.get("type") == "function_call_output"
+        ]
+        assert len(tool_outputs) == 1
+        assert tool_outputs[0]["call_id"] == "call_list_1"
+        assert "main.py" in tool_outputs[0]["output"]
+
+    def test_multiple_tool_calls_in_single_turn(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("AAA", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("BBB", encoding="utf-8")
+
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="read_file",
+                            call_id="call_read_a",
+                            arguments='{"path": "a.txt"}',
+                        ),
+                        FunctionCall(
+                            name="read_file",
+                            call_id="call_read_b",
+                            arguments='{"path": "b.txt"}',
+                        ),
+                    ]
+                ),
+                LLMResponse(text="文件 a 的内容是 AAA，文件 b 的内容是 BBB。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("读 a.txt 和 b.txt")
+        assert "AAA" in answer and "BBB" in answer
+
+        second_history = fake_llm.call_history[1]
+        tool_outputs = [
+            item for item in second_history if item.get("type") == "function_call_output"
+        ]
+        assert len(tool_outputs) == 2
+        assert tool_outputs[0]["call_id"] == "call_read_a"
+        assert tool_outputs[1]["call_id"] == "call_read_b"
+
+    def test_tool_failure_handled_gracefully(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="read_file",
+                            call_id="call_fail_1",
+                            arguments='{"path": "non_existent.py"}',
+                        )
+                    ]
+                ),
+                LLMResponse(text="文件不存在，我无法读取。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("读不存在的文件")
+        assert answer == "文件不存在，我无法读取。"
+
+        second_history = fake_llm.call_history[1]
+        tool_outputs = [
+            item for item in second_history if item.get("type") == "function_call_output"
+        ]
+        assert "不存在" in tool_outputs[0]["output"]
+
+    def test_invalid_json_arguments(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="read_file",
+                            call_id="call_bad_json",
+                            arguments="not valid json",
+                        )
+                    ]
+                ),
+                LLMResponse(text="参数格式错误。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("测试坏参数")
+        assert answer == "参数格式错误。"
+
+    def test_unknown_tool_name(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="non_existent_tool",
+                            call_id="call_unknown",
+                            arguments="{}",
+                        )
+                    ]
+                ),
+                LLMResponse(text="未知工具已处理。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("调用未知工具")
+        assert answer == "未知工具已处理。"
+
+    def test_max_tool_rounds_exceeded(self, tmp_path: Path) -> None:
+        infinite_responses = [
+            LLMResponse(
+                function_calls=[
+                    FunctionCall(
+                        name="list_files",
+                        call_id=f"call_{i}",
+                        arguments='{"path": "."}',
+                    )
+                ]
+            )
+            for i in range(10)
+        ]
+        fake_llm = FakeLLMClient(infinite_responses)
+        config = AgentConfig(workspace_root=tmp_path, max_tool_rounds=3)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("无限循环工具")
+        assert "上限" in answer
+        assert len(fake_llm.call_history) == 3
+
+    def test_empty_user_input(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient([])
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("   ")
+        assert answer == ""
+        assert len(fake_llm.call_history) == 0
+
+    def test_dangerous_command_user_rejected(self, tmp_path: Path) -> None:
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="run_shell",
+                            call_id="call_shell_1",
+                            arguments='{"command": "touch dangerous.txt"}',
+                        )
+                    ]
+                ),
+                LLMResponse(text="既然您拒绝了，我不会执行此命令。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        listener = RecordingEventListener(confirm_decision=False)
+        agent = Agent(config=config, llm_client=fake_llm, listener=listener)
+
+        answer = agent.step("创建文件")
+        assert "拒绝" in answer
+        assert not (tmp_path / "dangerous.txt").exists()
