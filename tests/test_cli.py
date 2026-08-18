@@ -180,7 +180,7 @@ class TestCliReplExecution:
                 )
                 assert result.exit_code == 0
                 assert "大模型服务商预设列表" in result.stdout
-                assert "DeepSeek-R1" in result.stdout
+                assert "deepseek-v4-reasoner" in result.stdout
 
     def test_repl_diff_command(self, tmp_path: Path) -> None:
         dummy_llm = DummyLLM("test answer")

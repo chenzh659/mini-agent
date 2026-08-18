@@ -1,10 +1,15 @@
-"""Unit tests for token usage and cost calculations."""
+"""Unit tests for token usage and dynamic cost calculations."""
+
+from pathlib import Path
 
 from mini_agent.cost import (
     UsageStats,
     calculate_cost_cny,
     estimate_tokens_from_text,
     format_cost_cny,
+    get_model_pricing,
+    load_pricing_table,
+    set_custom_pricing,
 )
 
 
@@ -26,20 +31,18 @@ def test_estimate_tokens_from_text() -> None:
     assert tokens > 10
 
 
-def test_calculate_cost_deepseek() -> None:
-    # 1M prompt @ 1.0 CNY, 1M completion @ 2.0 CNY
-    cost = calculate_cost_cny(1_000_000, 1_000_000, "deepseek-chat")
-    assert cost == 3.0
+def test_deepseek_v4_series_pricing() -> None:
+    # deepseek-v4 standard: 1.0 in, 2.0 out
+    cost_v4 = calculate_cost_cny(1_000_000, 1_000_000, "deepseek-v4")
+    assert cost_v4 == 3.0
 
-    # 1K prompt @ 0.001, 1K completion @ 0.002 -> 0.003
-    cost_1k = calculate_cost_cny(1000, 1000, "deepseek-chat")
-    assert abs(cost_1k - 0.003) < 1e-5
+    # deepseek-v4-flash: 0.5 in, 1.0 out
+    cost_flash = calculate_cost_cny(1_000_000, 1_000_000, "deepseek-v4-flash")
+    assert cost_flash == 1.5
 
-
-def test_calculate_cost_deepseek_r1() -> None:
-    # 1M prompt @ 4.0 CNY, 1M completion @ 16.0 CNY
-    cost = calculate_cost_cny(1_000_000, 1_000_000, "deepseek-reasoner")
-    assert cost == 20.0
+    # deepseek-v4-reasoner: 4.0 in, 16.0 out
+    cost_reasoner = calculate_cost_cny(1_000_000, 1_000_000, "deepseek-v4-reasoner")
+    assert cost_reasoner == 20.0
 
 
 def test_calculate_cost_ollama_free() -> None:
@@ -51,3 +54,25 @@ def test_format_cost_cny() -> None:
     assert format_cost_cny(0.0) == "免费 (¥0.00)"
     assert "¥" in format_cost_cny(0.0024)
     assert "¥" in format_cost_cny(1.50)
+
+
+def test_set_custom_pricing_and_load(tmp_path: Path) -> None:
+    custom_file = tmp_path / "custom_pricing.json"
+
+    # Set new model pricing
+    set_custom_pricing("my-custom-model", 0.25, 0.75, pricing_file=custom_file)
+    table = load_pricing_table(pricing_file=custom_file)
+
+    assert "my-custom-model" in table
+    assert table["my-custom-model"] == (0.25, 0.75)
+
+    # Calculate cost using custom pricing file
+    cost = calculate_cost_cny(1_000_000, 1_000_000, "my-custom-model", pricing_file=custom_file)
+    assert cost == 1.0
+
+
+def test_env_var_pricing_override(monkeypatch: object) -> None:
+    monkeypatch.setenv("MINI_AGENT_PRICING", "special-model:0.1,0.2;other-model:5.0,10.0")  # type: ignore[attr-defined]
+    p_in, p_out = get_model_pricing("special-model")
+    assert p_in == 0.1
+    assert p_out == 0.2

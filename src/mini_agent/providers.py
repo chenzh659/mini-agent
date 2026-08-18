@@ -1,4 +1,4 @@
-"""Provider presets for mainstream LLM services (DeepSeek, OpenAI, Ollama, Qwen, etc.)."""
+"""Provider presets for mainstream LLM services (DeepSeek V4, OpenAI, Ollama, Qwen, etc.)."""
 
 from dataclasses import dataclass
 
@@ -18,17 +18,31 @@ class ProviderPreset:
 PREDEFINED_PROVIDERS: dict[str, ProviderPreset] = {
     "deepseek": ProviderPreset(
         name="deepseek",
-        display_name="DeepSeek (官方 V3)",
-        default_model="deepseek-chat",
+        display_name="DeepSeek V4 (官方标准版)",
+        default_model="deepseek-v4",
         base_url="https://api.deepseek.com",
-        description="深度求索官方接口，高性价比，编程与通用能力极强",
+        description="深度求索全新 V4 系列旗舰模型，编程与综合推理能力巅峰",
+    ),
+    "deepseek-flash": ProviderPreset(
+        name="deepseek-flash",
+        display_name="DeepSeek V4 Flash (极速版)",
+        default_model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        description="极速低延迟轻量模型，价格极具性价比，适合代码检索与快速审查",
     ),
     "deepseek-r1": ProviderPreset(
         name="deepseek-r1",
-        display_name="DeepSeek-R1 (深度推理)",
-        default_model="deepseek-reasoner",
+        display_name="DeepSeek V4 Reasoner (深度思考)",
+        default_model="deepseek-v4-reasoner",
         base_url="https://api.deepseek.com",
-        description="深度求索推理模型，擅长复杂算法设计与深度代码推理",
+        description="深度强化学习推理模型，长链路架构设计与复杂 Bug 溯源首选",
+    ),
+    "deepseek-v3": ProviderPreset(
+        name="deepseek-v3",
+        display_name="DeepSeek V3 (经典版)",
+        default_model="deepseek-chat",
+        base_url="https://api.deepseek.com",
+        description="DeepSeek-V3 稳定对话版本",
     ),
     "openai": ProviderPreset(
         name="openai",
@@ -56,7 +70,7 @@ PREDEFINED_PROVIDERS: dict[str, ProviderPreset] = {
         display_name="硅基流动 (SiliconFlow)",
         default_model="deepseek-ai/DeepSeek-V3",
         base_url="https://api.siliconflow.cn/v1",
-        description="国内高并发模型托管平台，支持 DeepSeek-V3 / R1 等",
+        description="国内高并发模型托管平台，支持 DeepSeek 系列等",
     ),
     "moonshot": ProviderPreset(
         name="moonshot",
@@ -76,8 +90,17 @@ PREDEFINED_PROVIDERS: dict[str, ProviderPreset] = {
 
 
 def get_provider_preset(name: str) -> ProviderPreset | None:
-    """Lookup a provider preset by name (case-insensitive)."""
+    """Lookup a provider preset by name (case-insensitive with aliases)."""
     clean_name = name.strip().lower()
+    if clean_name in ("deepseek-reasoner", "reasoner"):
+        clean_name = "deepseek-r1"
+    if clean_name in ("deepseek-chat", "v3"):
+        clean_name = "deepseek-v3"
+    if clean_name in ("flash", "v4-flash"):
+        clean_name = "deepseek-flash"
+    if clean_name in ("v4", "deepseek-v4"):
+        clean_name = "deepseek"
+
     return PREDEFINED_PROVIDERS.get(clean_name)
 
 

@@ -17,7 +17,13 @@ from rich.table import Table
 from rich.text import Text
 
 from mini_agent.agent import Agent, AgentEventListener
-from mini_agent.cost import UsageStats, format_cost_cny
+from mini_agent.cost import (
+    UsageStats,
+    format_cost_cny,
+    get_model_pricing,
+    load_pricing_table,
+    set_custom_pricing,
+)
 from mini_agent.llm import LLMClient, LLMError, OpenAIChatCompletionsClient
 from mini_agent.models import AgentConfig, ToolResult
 from mini_agent.providers import (
@@ -193,19 +199,19 @@ class RichAgentEventListener(AgentEventListener):
 def render_help(console: Console) -> None:
     """Print beautifully formatted help table."""
     table = Table(box=box.ROUNDED, border_style="cyan", show_header=True, header_style="bold cyan")
-    table.add_column("指令", style="bold white", width=18)
+    table.add_column("指令", style="bold white", width=22)
     table.add_column("说明与用途", style="white")
 
     table.add_row("/help", "显示快捷指令与 Agent 工具能力说明")
-    table.add_row("/provider [name]", "切换或查看各大模型服务商预设 (DeepSeek, Ollama 等)")
-    table.add_row("/cost", "查看当前会话 Token 消耗与累计预估费用")
+    table.add_row("/provider [name]", "切换或查看各大模型服务商预设 (DeepSeek V4, Ollama 等)")
+    table.add_row("/cost [set/list]", "查看 Token 消耗看板，或自定义/查看模型费率表")
     table.add_row("/diff", "查看当前工作区的所有 Git 代码改动")
     table.add_row("/commit [msg]", "智能生成或执行 Git 提交")
     table.add_row("/sessions", "查看当前工作区的所有历史会话")
     table.add_row("/resume <id>", "切换并恢复指定历史会话")
     table.add_row("/new", "重置并开启全新会话")
     table.add_row("/clear", "清屏并重新展示顶部状态 Banner")
-    table.add_row("/model [name]", "查看或临时切换当前模型 (如 /model deepseek-chat)")
+    table.add_row("/model [name]", "查看或临时切换当前模型 (如 /model deepseek-v4-flash)")
     table.add_row("/exit, /quit", "退出当前 mini-agent 会话")
 
     console.print(table)
@@ -257,7 +263,7 @@ def render_providers_table(console: Console) -> None:
         header_style="bold cyan",
     )
     table.add_column("预设名 (Name)", style="bold white", width=16)
-    table.add_column("服务商 / 名称", style="bright_cyan", width=22)
+    table.add_column("服务商 / 名称", style="bright_cyan", width=24)
     table.add_column("默认模型", style="magenta", width=24)
     table.add_column("说明与特点", style="dim")
 
@@ -281,14 +287,43 @@ def render_cost_table(console: Console, agent: Agent) -> None:
 
     u = agent.session_usage
     total_cost = agent.session.meta.total_cost_cny
+    p_in, p_out = get_model_pricing(agent.config.model)
+
     table.add_row("活跃模型", agent.config.model, "当前生效的大模型")
+    table.add_row(
+        "当前模型单价",
+        f"输入 ¥{p_in}/M | 输出 ¥{p_out}/M",
+        "百万 Tokens 计费单价",
+    )
     table.add_row("累计输入 Tokens", f"{u.prompt_tokens:,}", "提示词与上下文所占 Token")
     table.add_row("累计输出 Tokens", f"{u.completion_tokens:,}", "模型回答与思考所占 Token")
     table.add_row("累计总 Tokens", f"{u.total_tokens:,}", "输入 + 输出 Token 总和")
-    table.add_row("累计预估费用", format_cost_cny(total_cost), "基于公开官方定价估算")
+    table.add_row("累计预估费用", format_cost_cny(total_cost), "基于当前模型定价计算")
 
     console.print(table)
-    console.print()
+    console.print(
+        "[dim]提示：使用 /cost set <模型> <输入价> <输出价> 可自定义任意模型费率。[/dim]\n"
+    )
+
+
+def render_pricing_list_table(console: Console) -> None:
+    """Render full active pricing table for all models."""
+    table = load_pricing_table()
+    rich_table = Table(
+        title="📋 活跃模型计费费率表 (单位: 元/百万 Tokens)",
+        box=box.ROUNDED,
+        border_style="cyan",
+        header_style="bold cyan",
+    )
+    rich_table.add_column("模型名称 / 前缀", style="bold white", width=24)
+    rich_table.add_column("输入单价 (¥/1M)", style="bright_cyan", justify="right", width=18)
+    rich_table.add_column("输出单价 (¥/1M)", style="magenta", justify="right", width=18)
+
+    for m_name, (p_in, p_out) in sorted(table.items()):
+        rich_table.add_row(m_name, f"¥{p_in:.2f}", f"¥{p_out:.2f}")
+
+    console.print(rich_table)
+    console.print("[dim]提示：自定义费率已保存至 ~/.mini-agent/pricing.json。[/dim]\n")
 
 
 def render_sessions_table(console: Console, workspace: Path) -> None:
@@ -357,8 +392,33 @@ def repl_loop(agent: Agent, console: Console) -> None:
             )
             continue
 
-        if user_input in ("/cost", "/tokens"):
-            render_cost_table(console, agent)
+        if user_input.startswith("/cost"):
+            cost_parts = user_input.split()
+            if len(cost_parts) == 1:
+                render_cost_table(console, agent)
+            elif cost_parts[1] == "list":
+                render_pricing_list_table(console)
+            elif cost_parts[1] == "set" and len(cost_parts) >= 5:
+                target_m = cost_parts[2]
+                try:
+                    p_in = float(cost_parts[3])
+                    p_out = float(cost_parts[4])
+                    set_custom_pricing(target_m, p_in, p_out)
+                    console.print(
+                        f"[green]✔ 已成功更新模型 '{target_m}' 费率:[/green] "
+                        f"输入 ¥{p_in}/M | 输出 ¥{p_out}/M\n"
+                    )
+                except ValueError:
+                    console.print(
+                        "[red]✗ 价格格式错误。用法: /cost set <模型> <输入价> <输出价>[/red]\n"
+                    )
+            else:
+                console.print(
+                    "[yellow]用法:\n"
+                    "  /cost      - 查看当前会话用量与费用看板\n"
+                    "  /cost list - 查看所有已配置模型的费率表\n"
+                    "  /cost set <模型> <输入价> <输出价> - 自定义模型费率 (元/1M)[/yellow]\n"
+                )
             continue
 
         if user_input.startswith("/provider"):
@@ -567,7 +627,7 @@ def run_cli(
     elif os.environ.get("MINI_AGENT_MODEL"):
         resolved_model = os.environ["MINI_AGENT_MODEL"]
     elif effective_base_url and "deepseek" in effective_base_url.lower():
-        resolved_model = "deepseek-chat"
+        resolved_model = "deepseek-v4"
     else:
         resolved_model = "gpt-4o-mini"
 
@@ -581,7 +641,7 @@ def run_cli(
                 "  [cyan]export OPENAI_API_KEY='sk-...'[/cyan]\n"
                 "若使用 DeepSeek，可同时配置：\n"
                 "  [cyan]export OPENAI_BASE_URL='https://api.deepseek.com'[/cyan]\n"
-                "  [cyan]export MINI_AGENT_MODEL='deepseek-chat'[/cyan]"
+                "  [cyan]export MINI_AGENT_MODEL='deepseek-v4'[/cyan]"
             )
             raise typer.Exit(code=1)
         client: LLMClient = OpenAIChatCompletionsClient(
@@ -658,7 +718,7 @@ def main(
         typer.Option(
             "--model",
             "-m",
-            help="覆盖本次会话的模型名称（如 deepseek-chat 或 gpt-4o）",
+            help="覆盖本次会话的模型名称（如 deepseek-v4 或 gpt-4o）",
         ),
     ] = None,
     base_url: Annotated[
