@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from mini_agent.context import compact_history
 from mini_agent.llm import LLMClient, get_system_prompt, get_tool_definitions
 from mini_agent.models import (
     AgentConfig,
@@ -236,8 +237,9 @@ class Agent:
             if self.listener and hasattr(self.listener, "on_model_start"):
                 self.listener.on_model_start()
 
+            compacted_history = compact_history(self.history)
             response = self.llm_client.create_response(
-                self.history,
+                compacted_history,
                 self.tools,
                 model=self.config.model,
                 on_token=self._on_token,

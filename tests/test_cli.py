@@ -169,6 +169,41 @@ class TestCliReplExecution:
                 assert "暂无历史会话" in result.stdout
                 assert "全新会话" in result.stdout
 
+    def test_repl_provider_command(self, tmp_path: Path) -> None:
+        dummy_llm = DummyLLM("test answer")
+        with patch("mini_agent.cli.OpenAIChatCompletionsClient", return_value=dummy_llm):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-key"}):
+                result = runner.invoke(
+                    app,
+                    ["--workspace", str(tmp_path)],
+                    input="/provider\n/provider deepseek-r1\n/exit\n",
+                )
+                assert result.exit_code == 0
+                assert "大模型服务商预设列表" in result.stdout
+                assert "DeepSeek-R1" in result.stdout
+
+    def test_repl_diff_command(self, tmp_path: Path) -> None:
+        dummy_llm = DummyLLM("test answer")
+        with patch("mini_agent.cli.OpenAIChatCompletionsClient", return_value=dummy_llm):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-key"}):
+                result = runner.invoke(
+                    app,
+                    ["--workspace", str(tmp_path)],
+                    input="/diff\n/exit\n",
+                )
+                assert result.exit_code == 0
+
+    def test_one_shot_prompt_flag(self, tmp_path: Path) -> None:
+        dummy_llm = DummyLLM("这是单次执行的回答")
+        with patch("mini_agent.cli.OpenAIChatCompletionsClient", return_value=dummy_llm):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-key"}):
+                result = runner.invoke(
+                    app,
+                    ["--workspace", str(tmp_path), "-p", "请问今天天气怎么样？"],
+                )
+                assert result.exit_code == 0
+                assert "这是单次执行的回答" in result.stdout
+
     def test_rich_listener_events_and_streaming(self) -> None:
         test_console = Console(record=True)
         listener = RichAgentEventListener(console=test_console, verbose=True)

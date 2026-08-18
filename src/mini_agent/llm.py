@@ -52,8 +52,10 @@ class LLMClient(Protocol):
 
 
 def get_system_prompt(workspace_root: Path) -> str:
-    """Generate system instructions for the Agent."""
-    return (
+    """Generate system instructions for the Agent with project rules if present."""
+    from mini_agent.rules import load_project_rules
+
+    base_prompt = (
         f"你是一个运行在工作区 '{workspace_root.as_posix()}' 的智能开发助手 (mini-agent)。\n"
         "你可以使用以下工具进行开发：\n"
         "- `list_files`：查看目录结构与文件布局；\n"
@@ -67,6 +69,12 @@ def get_system_prompt(workspace_root: Path) -> str:
         "3. 仅在创建全新文件时使用 `write_file`；\n"
         "4. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
     )
+
+    project_rules = load_project_rules(workspace_root)
+    if project_rules:
+        return base_prompt + project_rules
+
+    return base_prompt
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:

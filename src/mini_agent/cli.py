@@ -1,6 +1,7 @@
 """Typer CLI interface and Rich REPL implementation (Antigravity Style)."""
 
 import os
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -11,12 +12,17 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
 from mini_agent.agent import Agent, AgentEventListener
 from mini_agent.llm import LLMClient, LLMError, OpenAIChatCompletionsClient
 from mini_agent.models import AgentConfig, ToolResult
+from mini_agent.providers import (
+    get_provider_preset,
+    list_provider_presets,
+)
 from mini_agent.session import (
     SessionData,
     generate_session_id,
@@ -54,11 +60,9 @@ def render_banner(
     content.append("💡 提示:   ", style="bold bright_black")
     content.append("输入问题开始协作，使用 ", style="dim")
     content.append("/help", style="bold cyan")
-    content.append(" 指令，", style="dim")
-    content.append("/sessions", style="bold cyan")
-    content.append(" 历史会话，", style="dim")
-    content.append("/clear", style="bold cyan")
-    content.append(" 清屏，", style="dim")
+    content.append(" 查看指令，", style="dim")
+    content.append("/provider", style="bold cyan")
+    content.append(" 切换模型，", style="dim")
     content.append("/exit", style="bold cyan")
     content.append(" 退出", style="dim")
 
@@ -182,6 +186,9 @@ def render_help(console: Console) -> None:
     table.add_column("说明与用途", style="white")
 
     table.add_row("/help", "显示快捷指令与 Agent 工具能力说明")
+    table.add_row("/provider [name]", "切换或查看各大模型服务商预设 (DeepSeek, Ollama 等)")
+    table.add_row("/diff", "查看当前工作区的所有 Git 代码改动")
+    table.add_row("/commit [msg]", "智能生成或执行 Git 提交")
     table.add_row("/sessions", "查看当前工作区的所有历史会话")
     table.add_row("/resume <id>", "切换并恢复指定历史会话")
     table.add_row("/new", "重置并开启全新会话")
@@ -228,6 +235,26 @@ def render_help(console: Console) -> None:
     console.print("[dim]提示：按 Ctrl-C 取消当前行输入，按 Ctrl-D 正常退出。[/dim]\n")
 
 
+def render_providers_table(console: Console) -> None:
+    """Render list of available predefined providers."""
+    presets = list_provider_presets()
+    table = Table(
+        title="🌐 大模型服务商预设列表 (输入 /provider <名称> 切换)",
+        box=box.ROUNDED,
+        border_style="cyan",
+        header_style="bold cyan",
+    )
+    table.add_column("预设名 (Name)", style="bold white", width=16)
+    table.add_column("服务商 / 名称", style="bright_cyan", width=22)
+    table.add_column("默认模型", style="magenta", width=24)
+    table.add_column("说明与特点", style="dim")
+
+    for p in presets:
+        table.add_row(p.name, p.display_name, p.default_model, p.description)
+
+    console.print(table)
+
+
 def render_sessions_table(console: Console, workspace: Path) -> None:
     """Render list of saved sessions for workspace."""
     sessions = list_sessions(workspace_root=workspace)
@@ -248,7 +275,6 @@ def render_sessions_table(console: Console, workspace: Path) -> None:
     table.add_column("会话主题 / 摘要", style="white")
 
     for s in sessions:
-        # Format updated_at nicely
         try:
             dt = s.updated_at.split("T")[0] + " " + s.updated_at.split("T")[1][:8]
         except Exception:
@@ -293,6 +319,102 @@ def repl_loop(agent: Agent, console: Console) -> None:
                 agent.config.model,
                 session_id=agent.session.meta.session_id,
             )
+            continue
+
+        if user_input.startswith("/provider"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) > 1:
+                pname = parts[1].strip()
+                preset = get_provider_preset(pname)
+                if preset:
+                    agent.config.model = preset.default_model
+                    agent.session.meta.model = preset.default_model
+                    try:
+                        agent.llm_client = OpenAIChatCompletionsClient(
+                            base_url=preset.base_url,
+                        )
+                    except Exception:
+                        pass
+                    console.print(
+                        f"[green]✔ 已成功切换服务商:[/green] "
+                        f"[bold cyan]{preset.display_name}[/bold cyan] "
+                        f"[dim](模型: {preset.default_model})[/dim]\n"
+                    )
+                else:
+                    console.print(f"[red]✗ 未知服务商预设: '{pname}'[/red]")
+                    render_providers_table(console)
+            else:
+                render_providers_table(console)
+            continue
+
+        if user_input == "/diff":
+            try:
+                res = subprocess.run(
+                    ["git", "diff"],
+                    cwd=agent.config.workspace_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if res.stdout.strip():
+                    console.print(
+                        Syntax(
+                            res.stdout,
+                            "diff",
+                            theme="monokai",
+                            line_numbers=False,
+                        )
+                    )
+                else:
+                    console.print("[dim green]✔ 工作区代码干净，无未暂存的代码改动。[/dim green]\n")
+            except Exception as exc:
+                console.print(f"[red]✗ 执行 git diff 失败: {exc}[/red]\n")
+            continue
+
+        if user_input.startswith("/commit"):
+            parts = user_input.split(maxsplit=1)
+            msg = parts[1].strip() if len(parts) > 1 else ""
+            if not msg:
+                # Ask agent to generate commit message based on diff
+                try:
+                    diff_res = subprocess.run(
+                        ["git", "diff", "HEAD"],
+                        cwd=agent.config.workspace_root,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    diff_text = diff_res.stdout.strip()
+                    if not diff_text:
+                        console.print("[yellow]当前没有代码变更可提交。[/yellow]\n")
+                        continue
+                    gen_prompt = (
+                        "请根据以下 git diff 生成一行标准规范的 Conventional Commit 信息"
+                        "（例如 feat: ... 或 fix: ...），仅直接返回 Commit 文本本身：\n"
+                        f"```diff\n{diff_text[:3000]}\n```"
+                    )
+                    gen_msg = agent.step(gen_prompt).strip().strip("`'\"")
+                    if Confirm.ask(
+                        f"是否以此信息提交？\n[bold cyan]{gen_msg}[/bold cyan]",
+                        default=True,
+                        console=console,
+                    ):
+                        msg = gen_msg
+                    else:
+                        continue
+                except Exception as exc:
+                    console.print(f"[red]✗ 生成提交信息失败: {exc}[/red]\n")
+                    continue
+
+            if msg:
+                try:
+                    subprocess.run(["git", "add", "."], cwd=agent.config.workspace_root, check=True)
+                    subprocess.run(
+                        ["git", "commit", "-m", msg], cwd=agent.config.workspace_root, check=True
+                    )
+                    console.print(f"[green]✔ Git 提交成功:[/green] [bold cyan]{msg}[/bold cyan]\n")
+                except subprocess.CalledProcessError as exc:
+                    console.print(f"[red]✗ Git 提交失败: {exc}[/red]\n")
             continue
 
         if user_input == "/sessions":
@@ -381,13 +503,14 @@ def run_cli(
     workspace: Path | None = None,
     model: str | None = None,
     base_url: str | None = None,
+    prompt: str | None = None,
     continue_session: bool = False,
     session_id: str | None = None,
     verbose: bool = False,
     agent_factory: Callable[[AgentConfig, LLMClient, AgentEventListener], Agent] | None = None,
     llm_client: LLMClient | None = None,
 ) -> None:
-    """Core logic to run the CLI."""
+    """Core logic to run the CLI in interactive or one-shot mode."""
     target_workspace = (workspace or Path.cwd()).resolve()
     load_dotenv(target_workspace)
     if not target_workspace.exists():
@@ -400,7 +523,6 @@ def run_cli(
     effective_base_url = (
         base_url or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
     )
-    # Default model: If DeepSeek base_url is detected, default to deepseek-chat
     if model:
         resolved_model = model
     elif os.environ.get("MINI_AGENT_MODEL"):
@@ -461,6 +583,16 @@ def run_cli(
             session=loaded_session,
         )
 
+    # One-shot non-interactive execution
+    if prompt:
+        try:
+            agent.step(prompt)
+        except Exception as exc:
+            console.print(f"[bold red]执行失败[/bold red]: {exc}")
+            raise typer.Exit(code=1) from exc
+        return
+
+    # Interactive REPL mode
     repl_loop(agent, console=console)
 
 
@@ -472,6 +604,14 @@ def main(
             "--workspace",
             "-w",
             help="目标工作区根目录路径（缺省为当前工作目录）",
+        ),
+    ] = None,
+    prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt",
+            "-p",
+            help="单次非交互执行模式：直接执行指定任务并退出",
         ),
     ] = None,
     model: Annotated[
@@ -515,9 +655,10 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """启动 mini-agent 交互式 REPL。"""
+    """启动 mini-agent 交互式 REPL 或执行单次任务。"""
     run_cli(
         workspace=workspace,
+        prompt=prompt,
         model=model,
         base_url=base_url,
         continue_session=continue_session,

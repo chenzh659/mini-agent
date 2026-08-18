@@ -116,6 +116,7 @@ MINI_AGENT_MODEL=deepseek-chat
 
 选项:
   -w, --workspace PATH   指定目标工作区根目录（缺省为当前终端工作目录）
+  -p, --prompt TEXT      单次非交互执行模式：执行指定任务后退出
   -m, --model MODEL      覆盖本次会话的模型名称（如 deepseek-chat 或 gpt-4o）
   -b, --base-url URL     自定义 API Base URL（如 https://api.deepseek.com）
   -c, --continue         自动接续当前工作区最近一次历史会话
@@ -130,6 +131,9 @@ MINI_AGENT_MODEL=deepseek-chat
 # 启动并在当前工作区开启新会话（支持 Token 流式打字机输出）
 uv run mini-agent
 
+# 单次非交互模式：直接在终端执行任务并退出（适合自动化脚本）
+uv run mini-agent -p "运行单元测试并修复代码中的错误"
+
 # 断点续聊：接上一次离开时的对话
 uv run mini-agent --continue
 
@@ -142,12 +146,21 @@ uv run mini-agent --workspace /path/to/my-project --model deepseek-chat
 | 指令 | 说明 |
 | :--- | :--- |
 | **`/help`** | 显示指令与内置工具帮助说明 |
+| **`/provider [name]`** | 切换或查看大模型服务商预设（`deepseek`, `deepseek-r1`, `openai`, `ollama`, `qwen`, `siliconflow` 等） |
+| **`/diff`** | 查看当前工作区的所有 Git 代码改动（高亮彩色渲染） |
+| **`/commit [msg]`** | 智能分析改动生成 Conventional Commit 提交信息并自动提交 |
 | **`/sessions`** | 查看当前工作区的所有历史会话列表（ID、更新时间、轮数、摘要） |
 | **`/resume <id>`** | 切换并恢复指定历史会话 |
 | **`/new`** | 重置上下文，开启全新会话 |
 | **`/model [name]`** | 查看或临时切换当前模型（如 `/model deepseek-reasoner`） |
 | **`/clear`** | 清屏并置顶状态 Banner |
 | **`/exit, /quit`** | 优雅退出当前会话 |
+
+---
+
+## 项目自定义规则 (.agentrules / MINI_AGENT.md)
+
+`mini-agent` 启动时会自动扫描并加载项目根目录下的规范文件（优先级：`.agentrules` → `MINI_AGENT.md` → `CLAUDE.md` → `.cursorrules`），并自动注入系统提示词中，使 Agent 严格遵循当前项目的技术选型、架构规范与代码风格约束。
 
 ---
 
