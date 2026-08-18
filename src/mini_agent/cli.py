@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from mini_agent.agent import Agent, AgentEventListener
+from mini_agent.cost import UsageStats, format_cost_cny
 from mini_agent.llm import LLMClient, LLMError, OpenAIChatCompletionsClient
 from mini_agent.models import AgentConfig, ToolResult
 from mini_agent.providers import (
@@ -63,6 +64,8 @@ def render_banner(
     content.append(" 查看指令，", style="dim")
     content.append("/provider", style="bold cyan")
     content.append(" 切换模型，", style="dim")
+    content.append("/cost", style="bold cyan")
+    content.append(" 费用看板，", style="dim")
     content.append("/exit", style="bold cyan")
     content.append(" 退出", style="dim")
 
@@ -166,6 +169,14 @@ class RichAgentEventListener(AgentEventListener):
             reason = result.error or "未知错误"
             self.console.print(f"  [bold red]✗ 执行失败[/bold red]: [red]{reason}[/red]")
 
+    def on_usage(self, usage: UsageStats, cost_cny: float, model: str) -> None:
+        cost_str = format_cost_cny(cost_cny)
+        self.console.print(
+            f"  [dim]📊 本轮消耗: {usage.total_tokens:,} Tokens "
+            f"(输入: {usage.prompt_tokens:,} / 输出: {usage.completion_tokens:,}) | "
+            f"预估费用: {cost_str}[/dim]\n"
+        )
+
     def on_turn_finished(self, response: str) -> None:
         if self._streamed_any:
             self.console.print("\n")
@@ -187,6 +198,7 @@ def render_help(console: Console) -> None:
 
     table.add_row("/help", "显示快捷指令与 Agent 工具能力说明")
     table.add_row("/provider [name]", "切换或查看各大模型服务商预设 (DeepSeek, Ollama 等)")
+    table.add_row("/cost", "查看当前会话 Token 消耗与累计预估费用")
     table.add_row("/diff", "查看当前工作区的所有 Git 代码改动")
     table.add_row("/commit [msg]", "智能生成或执行 Git 提交")
     table.add_row("/sessions", "查看当前工作区的所有历史会话")
@@ -255,6 +267,30 @@ def render_providers_table(console: Console) -> None:
     console.print(table)
 
 
+def render_cost_table(console: Console, agent: Agent) -> None:
+    """Render table of token usage and estimated cost for the current session."""
+    table = Table(
+        title="💰 当前会话 Token 用量与累计费用统计",
+        box=box.ROUNDED,
+        border_style="cyan",
+        header_style="bold cyan",
+    )
+    table.add_column("统计项", style="bold white", width=22)
+    table.add_column("数值 / 明细", style="bright_cyan", width=26)
+    table.add_column("说明", style="dim")
+
+    u = agent.session_usage
+    total_cost = agent.session.meta.total_cost_cny
+    table.add_row("活跃模型", agent.config.model, "当前生效的大模型")
+    table.add_row("累计输入 Tokens", f"{u.prompt_tokens:,}", "提示词与上下文所占 Token")
+    table.add_row("累计输出 Tokens", f"{u.completion_tokens:,}", "模型回答与思考所占 Token")
+    table.add_row("累计总 Tokens", f"{u.total_tokens:,}", "输入 + 输出 Token 总和")
+    table.add_row("累计预估费用", format_cost_cny(total_cost), "基于公开官方定价估算")
+
+    console.print(table)
+    console.print()
+
+
 def render_sessions_table(console: Console, workspace: Path) -> None:
     """Render list of saved sessions for workspace."""
     sessions = list_sessions(workspace_root=workspace)
@@ -321,6 +357,10 @@ def repl_loop(agent: Agent, console: Console) -> None:
             )
             continue
 
+        if user_input in ("/cost", "/tokens"):
+            render_cost_table(console, agent)
+            continue
+
         if user_input.startswith("/provider"):
             parts = user_input.split(maxsplit=1)
             if len(parts) > 1:
@@ -375,7 +415,6 @@ def repl_loop(agent: Agent, console: Console) -> None:
             parts = user_input.split(maxsplit=1)
             msg = parts[1].strip() if len(parts) > 1 else ""
             if not msg:
-                # Ask agent to generate commit message based on diff
                 try:
                     diff_res = subprocess.run(
                         ["git", "diff", "HEAD"],

@@ -193,6 +193,18 @@ class TestCliReplExecution:
                 )
                 assert result.exit_code == 0
 
+    def test_repl_cost_command(self, tmp_path: Path) -> None:
+        dummy_llm = DummyLLM("test answer")
+        with patch("mini_agent.cli.OpenAIChatCompletionsClient", return_value=dummy_llm):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-key"}):
+                result = runner.invoke(
+                    app,
+                    ["--workspace", str(tmp_path)],
+                    input="/cost\n/exit\n",
+                )
+                assert result.exit_code == 0
+                assert "当前会话 Token 用量与累计费用统计" in result.stdout
+
     def test_one_shot_prompt_flag(self, tmp_path: Path) -> None:
         dummy_llm = DummyLLM("这是单次执行的回答")
         with patch("mini_agent.cli.OpenAIChatCompletionsClient", return_value=dummy_llm):

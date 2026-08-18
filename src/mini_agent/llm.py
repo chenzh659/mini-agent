@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from mini_agent.cost import UsageStats, estimate_tokens_from_text
+
 
 class LLMError(Exception):
     """Base exception for LLM operations."""
@@ -35,6 +37,7 @@ class LLMResponse:
     text: str | None = None
     function_calls: list[FunctionCall] = field(default_factory=list)
     raw_output: list[dict[str, Any]] = field(default_factory=list)
+    usage: UsageStats = field(default_factory=UsageStats)
 
 
 class LLMClient(Protocol):
@@ -184,7 +187,7 @@ def get_tool_definitions() -> list[dict[str, Any]]:
 
 
 class OpenAIChatCompletionsClient:
-    """OpenAI & DeepSeek compatible client using standard Chat Completions API with streaming."""
+    """OpenAI & DeepSeek compatible client with streaming & usage tracking."""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         import openai
@@ -258,7 +261,7 @@ class OpenAIChatCompletionsClient:
         model: str = "gpt-4o-mini",
         on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
-        """Call Chat Completions API with optional token streaming."""
+        """Call Chat Completions API with optional token streaming and usage tracking."""
         import openai
 
         messages = self._convert_messages(history)
@@ -271,11 +274,21 @@ class OpenAIChatCompletionsClient:
                     messages=messages,
                     tools=chat_tools if chat_tools else None,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
                 accumulated_text = ""
                 tool_calls_acc: dict[int, dict[str, str]] = {}
+                stream_usage: UsageStats | None = None
 
                 for chunk in response_stream:
+                    if getattr(chunk, "usage", None):
+                        u = chunk.usage
+                        stream_usage = UsageStats(
+                            prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                            completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+                            total_tokens=getattr(u, "total_tokens", 0) or 0,
+                        )
+
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -322,10 +335,21 @@ class OpenAIChatCompletionsClient:
                 if tool_calls_raw:
                     raw_output_item["tool_calls"] = tool_calls_raw
 
+                if not stream_usage or stream_usage.total_tokens == 0:
+                    prompt_str = " ".join([str(m.get("content", "")) for m in messages])
+                    p_tok = estimate_tokens_from_text(prompt_str)
+                    c_tok = estimate_tokens_from_text(accumulated_text)
+                    stream_usage = UsageStats(
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=p_tok + c_tok,
+                    )
+
                 return LLMResponse(
                     text=accumulated_text if accumulated_text else None,
                     function_calls=function_calls,
                     raw_output=[raw_output_item],
+                    usage=stream_usage,
                 )
 
             # Non-streaming execution
@@ -381,10 +405,29 @@ class OpenAIChatCompletionsClient:
         if tool_calls_raw:
             raw_output_item["tool_calls"] = tool_calls_raw
 
+        resp_usage: UsageStats
+        if getattr(response, "usage", None):
+            u = response.usage
+            resp_usage = UsageStats(
+                prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+                total_tokens=getattr(u, "total_tokens", 0) or 0,
+            )
+        else:
+            prompt_str = " ".join([str(m.get("content", "")) for m in messages])
+            p_tok = estimate_tokens_from_text(prompt_str)
+            c_tok = estimate_tokens_from_text(text or "")
+            resp_usage = UsageStats(
+                prompt_tokens=p_tok,
+                completion_tokens=c_tok,
+                total_tokens=p_tok + c_tok,
+            )
+
         return LLMResponse(
             text=text,
             function_calls=function_calls,
             raw_output=[raw_output_item],
+            usage=resp_usage,
         )
 
 

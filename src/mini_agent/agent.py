@@ -1,4 +1,4 @@
-"""Agent loop, history management, session persistence, and tool dispatching."""
+"""Agent loop, history management, session persistence, usage tracking, and tool dispatching."""
 
 import json
 from datetime import datetime
@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from mini_agent.context import compact_history
+from mini_agent.cost import UsageStats, calculate_cost_cny
 from mini_agent.llm import LLMClient, get_system_prompt, get_tool_definitions
 from mini_agent.models import (
     AgentConfig,
@@ -54,13 +55,17 @@ class AgentEventListener(Protocol):
         """Called after tool execution finishes."""
         ...
 
+    def on_usage(self, usage: UsageStats, cost_cny: float, model: str) -> None:
+        """Called when token usage and cost for a turn are calculated."""
+        ...
+
     def on_turn_finished(self, response: str) -> None:
         """Called when agent turn is fully completed."""
         ...
 
 
 class Agent:
-    """Core Agent coordinating LLM interactions, streaming, and tool execution."""
+    """Core Agent coordinating LLM interactions, streaming, tool execution, and usage tracking."""
 
     def __init__(
         self,
@@ -92,6 +97,13 @@ class Agent:
                 {"role": "system", "content": get_system_prompt(self.config.workspace_root)}
             ]
             self.session = SessionData(meta=new_meta, history=self.history)
+
+        self.session_usage = UsageStats(
+            prompt_tokens=self.session.meta.total_prompt_tokens,
+            completion_tokens=self.session.meta.total_completion_tokens,
+            total_tokens=self.session.meta.total_prompt_tokens
+            + self.session.meta.total_completion_tokens,
+        )
 
     def _on_token(self, token: str) -> None:
         """Forward streamed token to listener if present."""
@@ -213,14 +225,26 @@ class Agent:
             error=f"未知的工具名称: '{name}'",
         )
 
-    def _persist_session(self, user_input: str) -> None:
-        """Update metadata and auto-save session."""
+    def _persist_session(self, user_input: str, turn_usage: UsageStats) -> None:
+        """Update metadata, usage counters, and auto-save session."""
         self.session.meta.turn_count += 1
         if self.session.meta.title == "新对话":
             clean_title = user_input.replace("\n", " ").strip()
             self.session.meta.title = clean_title[:40] + ("..." if len(clean_title) > 40 else "")
+
+        cost = calculate_cost_cny(
+            turn_usage.prompt_tokens, turn_usage.completion_tokens, self.config.model
+        )
+        self.session.meta.total_prompt_tokens += turn_usage.prompt_tokens
+        self.session.meta.total_completion_tokens += turn_usage.completion_tokens
+        self.session.meta.total_cost_cny += cost
+        self.session_usage = self.session_usage.add(turn_usage)
         self.session.history = self.history
+
         save_session(self.session)
+
+        if self.listener and hasattr(self.listener, "on_usage"):
+            self.listener.on_usage(turn_usage, cost, self.config.model)
 
     def step(self, user_input: str) -> str:
         """Run a single user turn in the agent loop."""
@@ -232,6 +256,7 @@ class Agent:
             self.listener.on_turn_start(cleaned_input)
 
         self.history.append({"role": "user", "content": cleaned_input})
+        turn_usage = UsageStats()
 
         for _ in range(self.config.max_tool_rounds):
             if self.listener and hasattr(self.listener, "on_model_start"):
@@ -245,6 +270,8 @@ class Agent:
                 on_token=self._on_token,
             )
 
+            turn_usage = turn_usage.add(response.usage)
+
             # Append raw response items or assistant message to history
             if response.raw_output:
                 for out_item in response.raw_output:
@@ -257,7 +284,7 @@ class Agent:
                 final_answer = response.text or "(模型未返回文本内容)"
                 if self.listener and hasattr(self.listener, "on_turn_finished"):
                     self.listener.on_turn_finished(final_answer)
-                self._persist_session(cleaned_input)
+                self._persist_session(cleaned_input, turn_usage)
                 return final_answer
 
             # Process function calls in serial order
@@ -287,5 +314,5 @@ class Agent:
         timeout_msg = "工具调用轮数已达到上限，请缩小任务范围后重试。"
         if self.listener and hasattr(self.listener, "on_turn_finished"):
             self.listener.on_turn_finished(timeout_msg)
-        self._persist_session(cleaned_input)
+        self._persist_session(cleaned_input, turn_usage)
         return timeout_msg
