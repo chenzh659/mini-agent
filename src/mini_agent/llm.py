@@ -1,6 +1,7 @@
 """LLM protocol, Chat Completions adapter (DeepSeek/OpenAI), and system prompts."""
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -44,6 +45,7 @@ class LLMClient(Protocol):
         history: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         model: str = "gpt-4o-mini",
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """Send conversation history and tool schemas to LLM and return structured response."""
         ...
@@ -174,7 +176,7 @@ def get_tool_definitions() -> list[dict[str, Any]]:
 
 
 class OpenAIChatCompletionsClient:
-    """OpenAI & DeepSeek compatible client using the standard Chat Completions API."""
+    """OpenAI & DeepSeek compatible client using standard Chat Completions API with streaming."""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         import openai
@@ -246,18 +248,84 @@ class OpenAIChatCompletionsClient:
         history: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         model: str = "gpt-4o-mini",
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
-        """Call Chat Completions API and convert output to LLMResponse."""
+        """Call Chat Completions API with optional token streaming."""
         import openai
 
         messages = self._convert_messages(history)
         chat_tools = self._convert_tools(tools)
 
         try:
+            if on_token is not None:
+                response_stream = self._client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=chat_tools if chat_tools else None,
+                    stream=True,
+                )
+                accumulated_text = ""
+                tool_calls_acc: dict[int, dict[str, str]] = {}
+
+                for chunk in response_stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        accumulated_text += delta.content
+                        on_token(delta.content)
+                    if getattr(delta, "tool_calls", None):
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc.id:
+                                tool_calls_acc[idx]["id"] += tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_calls_acc[idx]["name"] += tc.function.name
+                                if tc.function.arguments:
+                                    tool_calls_acc[idx]["arguments"] += tc.function.arguments
+
+                function_calls: list[FunctionCall] = []
+                tool_calls_raw: list[dict[str, Any]] = []
+                for tc_dict in tool_calls_acc.values():
+                    function_calls.append(
+                        FunctionCall(
+                            name=tc_dict["name"],
+                            call_id=tc_dict["id"],
+                            arguments=tc_dict["arguments"],
+                        )
+                    )
+                    tool_calls_raw.append(
+                        {
+                            "id": tc_dict["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc_dict["name"],
+                                "arguments": tc_dict["arguments"],
+                            },
+                        }
+                    )
+
+                raw_output_item: dict[str, Any] = {"role": "assistant"}
+                if accumulated_text:
+                    raw_output_item["content"] = accumulated_text
+                if tool_calls_raw:
+                    raw_output_item["tool_calls"] = tool_calls_raw
+
+                return LLMResponse(
+                    text=accumulated_text if accumulated_text else None,
+                    function_calls=function_calls,
+                    raw_output=[raw_output_item],
+                )
+
+            # Non-streaming execution
             response = self._client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=chat_tools if chat_tools else None,
+                stream=False,
             )
         except openai.AuthenticationError as exc:
             raise LLMAuthError(f"API 身份验证失败，请检查 API Key 有效性: {exc}") from exc
@@ -276,8 +344,8 @@ class OpenAIChatCompletionsClient:
         choice = response.choices[0]
         msg = choice.message
         text = msg.content
-        function_calls: list[FunctionCall] = []
-        tool_calls_raw: list[dict[str, Any]] = []
+        function_calls = []
+        tool_calls_raw = []
 
         if getattr(msg, "tool_calls", None):
             for tc in msg.tool_calls:
@@ -299,7 +367,7 @@ class OpenAIChatCompletionsClient:
                     }
                 )
 
-        raw_output_item: dict[str, Any] = {"role": "assistant"}
+        raw_output_item = {"role": "assistant"}
         if text is not None:
             raw_output_item["content"] = text
         if tool_calls_raw:

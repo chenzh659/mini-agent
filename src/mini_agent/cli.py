@@ -17,6 +17,13 @@ from rich.text import Text
 from mini_agent.agent import Agent, AgentEventListener
 from mini_agent.llm import LLMClient, LLMError, OpenAIChatCompletionsClient
 from mini_agent.models import AgentConfig, ToolResult
+from mini_agent.session import (
+    SessionData,
+    generate_session_id,
+    get_latest_session,
+    list_sessions,
+    load_session,
+)
 
 app = typer.Typer(
     name="mini-agent",
@@ -26,7 +33,12 @@ app = typer.Typer(
 console = Console()
 
 
-def render_banner(console: Console, workspace: Path, model: str) -> None:
+def render_banner(
+    console: Console,
+    workspace: Path,
+    model: str,
+    session_id: str | None = None,
+) -> None:
     """Render sleek Antigravity-style header banner."""
     content = Text()
     content.append("✦ ", style="bold cyan")
@@ -36,10 +48,15 @@ def render_banner(console: Console, workspace: Path, model: str) -> None:
     content.append(f"{workspace.as_posix()}\n", style="white")
     content.append("⚡ 模型:   ", style="bold bright_black")
     content.append(f"{model}\n", style="bright_cyan")
+    if session_id:
+        content.append("💬 会话:   ", style="bold bright_black")
+        content.append(f"{session_id}\n", style="dim")
     content.append("💡 提示:   ", style="bold bright_black")
     content.append("输入问题开始协作，使用 ", style="dim")
     content.append("/help", style="bold cyan")
-    content.append(" 查看指令，", style="dim")
+    content.append(" 指令，", style="dim")
+    content.append("/sessions", style="bold cyan")
+    content.append(" 历史会话，", style="dim")
     content.append("/clear", style="bold cyan")
     content.append(" 清屏，", style="dim")
     content.append("/exit", style="bold cyan")
@@ -56,20 +73,31 @@ def render_banner(console: Console, workspace: Path, model: str) -> None:
 
 
 class RichAgentEventListener(AgentEventListener):
-    """Rich terminal event listener with structured step cards."""
+    """Rich terminal event listener with structured step cards and token streaming."""
 
     def __init__(self, console: Console, verbose: bool = False) -> None:
         self.console = console
         self.verbose = verbose
+        self._streamed_any = False
 
     def on_turn_start(self, user_input: str) -> None:
-        pass
+        self._streamed_any = False
+
+    def on_token(self, token: str) -> None:
+        if not self._streamed_any:
+            self.console.print("\n[bold cyan]🤖 Mini-Agent[/bold cyan]")
+            self._streamed_any = True
+        self.console.print(token, end="", markup=False)
 
     def on_model_start(self) -> None:
-        if self.verbose:
+        if self.verbose and not self._streamed_any:
             self.console.print("  [dim cyan]⏺ 正在请求模型思考...[/dim cyan]")
 
     def on_tool_start(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        if self._streamed_any:
+            self.console.print()
+            self._streamed_any = False
+
         if tool_name == "read_file":
             path = arguments.get("path", "")
             self.console.print(
@@ -135,16 +163,28 @@ class RichAgentEventListener(AgentEventListener):
             self.console.print(f"  [bold red]✗ 执行失败[/bold red]: [red]{reason}[/red]")
 
     def on_turn_finished(self, response: str) -> None:
-        pass
+        if self._streamed_any:
+            self.console.print("\n")
+            self._streamed_any = False
+        else:
+            self.console.print("\n[bold cyan]🤖 Mini-Agent[/bold cyan]")
+            try:
+                self.console.print(Markdown(response))
+            except Exception:
+                self.console.print(response)
+            self.console.print()
 
 
 def render_help(console: Console) -> None:
     """Print beautifully formatted help table."""
     table = Table(box=box.ROUNDED, border_style="cyan", show_header=True, header_style="bold cyan")
-    table.add_column("指令", style="bold white", width=16)
+    table.add_column("指令", style="bold white", width=18)
     table.add_column("说明与用途", style="white")
 
     table.add_row("/help", "显示快捷指令与 Agent 工具能力说明")
+    table.add_row("/sessions", "查看当前工作区的所有历史会话")
+    table.add_row("/resume <id>", "切换并恢复指定历史会话")
+    table.add_row("/new", "重置并开启全新会话")
     table.add_row("/clear", "清屏并重新展示顶部状态 Banner")
     table.add_row("/model [name]", "查看或临时切换当前模型 (如 /model deepseek-chat)")
     table.add_row("/exit, /quit", "退出当前 mini-agent 会话")
@@ -188,9 +228,45 @@ def render_help(console: Console) -> None:
     console.print("[dim]提示：按 Ctrl-C 取消当前行输入，按 Ctrl-D 正常退出。[/dim]\n")
 
 
+def render_sessions_table(console: Console, workspace: Path) -> None:
+    """Render list of saved sessions for workspace."""
+    sessions = list_sessions(workspace_root=workspace)
+    if not sessions:
+        console.print("[dim]当前工作区暂无历史会话。[/dim]\n")
+        return
+
+    table = Table(
+        title=f"📜 历史会话列表 (工作区: {workspace.name})",
+        box=box.ROUNDED,
+        border_style="cyan",
+        header_style="bold cyan",
+    )
+    table.add_column("Session ID", style="bold white", width=24)
+    table.add_column("更新时间", style="dim", width=20)
+    table.add_column("轮数", style="cyan", justify="right", width=6)
+    table.add_column("模型", style="magenta", width=16)
+    table.add_column("会话主题 / 摘要", style="white")
+
+    for s in sessions:
+        # Format updated_at nicely
+        try:
+            dt = s.updated_at.split("T")[0] + " " + s.updated_at.split("T")[1][:8]
+        except Exception:
+            dt = s.updated_at
+        table.add_row(s.session_id, dt, str(s.turn_count), s.model, s.title)
+
+    console.print(table)
+    console.print("[dim]输入 /resume <Session ID> 即可继续对应历史会话。[/dim]\n")
+
+
 def repl_loop(agent: Agent, console: Console) -> None:
     """Main interactive REPL loop with Antigravity styling."""
-    render_banner(console, agent.config.workspace_root, agent.config.model)
+    render_banner(
+        console,
+        agent.config.workspace_root,
+        agent.config.model,
+        session_id=agent.session.meta.session_id,
+    )
 
     while True:
         try:
@@ -211,7 +287,48 @@ def repl_loop(agent: Agent, console: Console) -> None:
 
         if user_input == "/clear":
             console.clear()
-            render_banner(console, agent.config.workspace_root, agent.config.model)
+            render_banner(
+                console,
+                agent.config.workspace_root,
+                agent.config.model,
+                session_id=agent.session.meta.session_id,
+            )
+            continue
+
+        if user_input == "/sessions":
+            render_sessions_table(console, agent.config.workspace_root)
+            continue
+
+        if user_input.startswith("/resume"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) > 1:
+                target_id = parts[1].strip()
+                loaded = load_session(target_id)
+                if loaded:
+                    agent.session = loaded
+                    agent.history = loaded.history
+                    console.print(
+                        f"[green]✔ 已成功恢复会话:[/green] [bold cyan]{target_id}[/bold cyan] "
+                        f"[dim]({loaded.meta.title}, {len(loaded.history)} 条记录)[/dim]\n"
+                    )
+                else:
+                    console.print(f"[red]✗ 未找到指定的会话 ID: '{target_id}'[/red]\n")
+            else:
+                console.print(
+                    "[yellow]用法: /resume <Session_ID> (可通过 /sessions 查看 ID)[/yellow]\n"
+                )
+            continue
+
+        if user_input == "/new":
+            new_id = generate_session_id()
+            agent.__init__(
+                config=agent.config,
+                llm_client=agent.llm_client,
+                listener=agent.listener,
+            )
+            console.print(
+                f"[green]✔ 已重置上下文，开启全新会话:[/green] [bold cyan]{new_id}[/bold cyan]\n"
+            )
             continue
 
         if user_input.startswith("/model"):
@@ -219,6 +336,7 @@ def repl_loop(agent: Agent, console: Console) -> None:
             if len(parts) > 1:
                 new_model = parts[1].strip()
                 agent.config.model = new_model
+                agent.session.meta.model = new_model
                 console.print(
                     f"[green]✔ 已切换当前模型为:[/green] [bold cyan]{new_model}[/bold cyan]\n"
                 )
@@ -233,15 +351,7 @@ def repl_loop(agent: Agent, console: Console) -> None:
             continue
 
         try:
-            with console.status("[bold cyan]⏺ Agent 正在思考并执行...[/bold cyan]", spinner="dots"):
-                answer = agent.step(user_input)
-
-            console.print("\n[bold cyan]🤖 Mini-Agent[/bold cyan]")
-            try:
-                console.print(Markdown(answer))
-            except Exception:
-                console.print(answer)
-            console.print()
+            agent.step(user_input)
         except LLMError as exc:
             console.print(f"\n[bold red]LLM 错误[/bold red]: {exc}\n")
         except Exception as exc:
@@ -271,6 +381,8 @@ def run_cli(
     workspace: Path | None = None,
     model: str | None = None,
     base_url: str | None = None,
+    continue_session: bool = False,
+    session_id: str | None = None,
     verbose: bool = False,
     agent_factory: Callable[[AgentConfig, LLMClient, AgentEventListener], Agent] | None = None,
     llm_client: LLMClient | None = None,
@@ -324,10 +436,30 @@ def run_cli(
     )
     listener = RichAgentEventListener(console=console, verbose=verbose)
 
+    # Handle session loading
+    loaded_session: SessionData | None = None
+    if session_id:
+        loaded_session = load_session(session_id)
+        if not loaded_session:
+            console.print(f"[bold red]错误[/bold red]: 未找到指定的会话 ID: '{session_id}'")
+            raise typer.Exit(code=1)
+    elif continue_session:
+        loaded_session = get_latest_session(target_workspace)
+        if loaded_session:
+            console.print(
+                f"[dim]已自动恢复上一次会话: {loaded_session.meta.session_id} "
+                f"({loaded_session.meta.title})[/dim]"
+            )
+
     if agent_factory is not None:
         agent = agent_factory(config, client, listener)
     else:
-        agent = Agent(config=config, llm_client=client, listener=listener)
+        agent = Agent(
+            config=config,
+            llm_client=client,
+            listener=listener,
+            session=loaded_session,
+        )
 
     repl_loop(agent, console=console)
 
@@ -358,6 +490,22 @@ def main(
             help="自定义 API Base URL（如 https://api.deepseek.com）",
         ),
     ] = None,
+    continue_session: Annotated[
+        bool,
+        typer.Option(
+            "--continue",
+            "-c",
+            help="恢复当前工作区的最近一次历史会话",
+        ),
+    ] = False,
+    session_id: Annotated[
+        str | None,
+        typer.Option(
+            "--session",
+            "-s",
+            help="指定要恢复的历史会话 ID",
+        ),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -368,4 +516,11 @@ def main(
     ] = False,
 ) -> None:
     """启动 mini-agent 交互式 REPL。"""
-    run_cli(workspace=workspace, model=model, base_url=base_url, verbose=verbose)
+    run_cli(
+        workspace=workspace,
+        model=model,
+        base_url=base_url,
+        continue_session=continue_session,
+        session_id=session_id,
+        verbose=verbose,
+    )

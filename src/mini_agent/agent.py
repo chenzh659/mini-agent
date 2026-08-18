@@ -1,6 +1,7 @@
-"""Agent loop, history management, and tool dispatching."""
+"""Agent loop, history management, session persistence, and tool dispatching."""
 
 import json
+from datetime import datetime
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -15,6 +16,12 @@ from mini_agent.models import (
     ToolResult,
     WriteFileInput,
 )
+from mini_agent.session import (
+    SessionData,
+    SessionMeta,
+    generate_session_id,
+    save_session,
+)
 from mini_agent.tools.filesystem import edit_file, list_files, read_file, write_file
 from mini_agent.tools.shell import check_command_safety, run_shell
 
@@ -24,6 +31,10 @@ class AgentEventListener(Protocol):
 
     def on_turn_start(self, user_input: str) -> None:
         """Called when a user turn begins."""
+        ...
+
+    def on_token(self, token: str) -> None:
+        """Called for each streamed token from the model."""
         ...
 
     def on_model_start(self) -> None:
@@ -48,27 +59,46 @@ class AgentEventListener(Protocol):
 
 
 class Agent:
-    """Core Agent coordinating LLM interactions and tool execution."""
+    """Core Agent coordinating LLM interactions, streaming, and tool execution."""
 
     def __init__(
         self,
         config: AgentConfig,
         llm_client: LLMClient,
         listener: AgentEventListener | None = None,
+        session: SessionData | None = None,
     ) -> None:
         self.config = config
         self.llm_client = llm_client
         self.listener = listener
         self.tools = get_tool_definitions()
 
-        # Initialize conversation history with system prompt
-        self.history: list[dict[str, Any]] = [
-            {"role": "system", "content": get_system_prompt(self.config.workspace_root)}
-        ]
+        if session is not None:
+            self.session = session
+            self.history = session.history
+        else:
+            now_iso = datetime.now().isoformat()
+            new_meta = SessionMeta(
+                session_id=generate_session_id(),
+                workspace_root=self.config.workspace_root.as_posix(),
+                created_at=now_iso,
+                updated_at=now_iso,
+                model=self.config.model,
+                title="新对话",
+                turn_count=0,
+            )
+            self.history: list[dict[str, Any]] = [
+                {"role": "system", "content": get_system_prompt(self.config.workspace_root)}
+            ]
+            self.session = SessionData(meta=new_meta, history=self.history)
+
+    def _on_token(self, token: str) -> None:
+        """Forward streamed token to listener if present."""
+        if self.listener and hasattr(self.listener, "on_token"):
+            self.listener.on_token(token)
 
     def _execute_tool(self, name: str, raw_arguments: str) -> ToolResult:
         """Parse arguments and dispatch execution to the corresponding tool."""
-        # Parse JSON
         try:
             args = json.loads(raw_arguments) if raw_arguments.strip() else {}
         except json.JSONDecodeError as exc:
@@ -85,7 +115,6 @@ class Agent:
                 error=f"工具参数必须为 JSON 对象 (dict)，收到: {type(args).__name__}",
             )
 
-        # Dispatch
         if name == "read_file":
             try:
                 inp = ReadFileInput(**args)
@@ -183,6 +212,15 @@ class Agent:
             error=f"未知的工具名称: '{name}'",
         )
 
+    def _persist_session(self, user_input: str) -> None:
+        """Update metadata and auto-save session."""
+        self.session.meta.turn_count += 1
+        if self.session.meta.title == "新对话":
+            clean_title = user_input.replace("\n", " ").strip()
+            self.session.meta.title = clean_title[:40] + ("..." if len(clean_title) > 40 else "")
+        self.session.history = self.history
+        save_session(self.session)
+
     def step(self, user_input: str) -> str:
         """Run a single user turn in the agent loop."""
         cleaned_input = user_input.strip()
@@ -202,6 +240,7 @@ class Agent:
                 self.history,
                 self.tools,
                 model=self.config.model,
+                on_token=self._on_token,
             )
 
             # Append raw response items or assistant message to history
@@ -216,6 +255,7 @@ class Agent:
                 final_answer = response.text or "(模型未返回文本内容)"
                 if self.listener and hasattr(self.listener, "on_turn_finished"):
                     self.listener.on_turn_finished(final_answer)
+                self._persist_session(cleaned_input)
                 return final_answer
 
             # Process function calls in serial order
@@ -245,4 +285,5 @@ class Agent:
         timeout_msg = "工具调用轮数已达到上限，请缩小任务范围后重试。"
         if self.listener and hasattr(self.listener, "on_turn_finished"):
             self.listener.on_turn_finished(timeout_msg)
+        self._persist_session(cleaned_input)
         return timeout_msg

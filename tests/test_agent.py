@@ -1,5 +1,6 @@
 """Unit tests for Agent loop and Fake LLM client integration."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from mini_agent.llm import (
     OpenAIChatCompletionsClient,
 )
 from mini_agent.models import AgentConfig, ToolResult
+from mini_agent.session import load_session
 
 
 class FakeLLMClient(LLMClient):
@@ -25,11 +27,16 @@ class FakeLLMClient(LLMClient):
         history: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         model: str = "gpt-4o-mini",
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         self.call_history.append(list(history))
         if not self.responses:
             return LLMResponse(text="[FakeLLM: No more responses configured]")
-        return self.responses.pop(0)
+        resp = self.responses.pop(0)
+        if resp.text and on_token:
+            for char in resp.text:
+                on_token(char)
+        return resp
 
 
 class RecordingEventListener(AgentEventListener):
@@ -37,10 +44,14 @@ class RecordingEventListener(AgentEventListener):
 
     def __init__(self, confirm_decision: bool = True) -> None:
         self.events: list[tuple[str, Any]] = []
+        self.tokens: list[str] = []
         self.confirm_decision = confirm_decision
 
     def on_turn_start(self, user_input: str) -> None:
         self.events.append(("turn_start", user_input))
+
+    def on_token(self, token: str) -> None:
+        self.tokens.append(token)
 
     def on_model_start(self) -> None:
         self.events.append(("model_start", None))
@@ -107,6 +118,7 @@ class TestAgentLoop:
         assert len(fake_llm.call_history) == 1
         assert len(fake_llm.call_history[0]) == 2
         assert fake_llm.call_history[0][1]["content"] == "你好"
+        assert "".join(listener.tokens) == "你好！我是助手。"
 
     def test_list_files_then_final_answer(self, tmp_path: Path) -> None:
         (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
@@ -349,3 +361,29 @@ class TestAgentLoop:
         answer = agent.step("修改函数名")
         assert "修改" in answer
         assert "def add" in (tmp_path / "calc.py").read_text(encoding="utf-8")
+
+    def test_session_auto_persistence_and_resume(self, tmp_path: Path, monkeypatch: Any) -> None:
+        sessions_dir = tmp_path / "sessions"
+        monkeypatch.setenv("MINI_AGENT_SESSIONS_DIR", str(sessions_dir))
+
+        fake_llm = FakeLLMClient([LLMResponse(text="第一轮回答")])
+        config = AgentConfig(workspace_root=tmp_path)
+        agent1 = Agent(config=config, llm_client=fake_llm)
+
+        session_id = agent1.session.meta.session_id
+        agent1.step("我的名字是 Alice")
+
+        # Verify session file was automatically saved
+        saved = load_session(session_id, sessions_dir=sessions_dir)
+        assert saved is not None
+        assert saved.meta.turn_count == 1
+        assert "Alice" in saved.meta.title
+
+        # Resume session with new Agent instance
+        fake_llm2 = FakeLLMClient([LLMResponse(text="你好 Alice！")])
+        agent2 = Agent(config=config, llm_client=fake_llm2, session=saved)
+        assert len(agent2.history) == len(saved.history)
+
+        answer = agent2.step("你还记得我的名字吗？")
+        assert "Alice" in answer
+        assert agent2.session.meta.turn_count == 2

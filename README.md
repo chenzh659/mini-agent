@@ -118,6 +118,8 @@ MINI_AGENT_MODEL=deepseek-chat
   -w, --workspace PATH   指定目标工作区根目录（缺省为当前终端工作目录）
   -m, --model MODEL      覆盖本次会话的模型名称（如 deepseek-chat 或 gpt-4o）
   -b, --base-url URL     自定义 API Base URL（如 https://api.deepseek.com）
+  -c, --continue         自动接续当前工作区最近一次历史会话
+  -s, --session ID       指定要恢复的历史会话 ID
   -v, --verbose          显示工具执行耗时、返回码等诊断信息
   --help                 显示命令行帮助说明
 ```
@@ -125,15 +127,27 @@ MINI_AGENT_MODEL=deepseek-chat
 ### 运行示例
 
 ```bash
-# 在当前工作区启动
+# 启动并在当前工作区开启新会话（支持 Token 流式打字机输出）
 uv run mini-agent
+
+# 断点续聊：接上一次离开时的对话
+uv run mini-agent --continue
 
 # 指定分析其他项目目录并使用 DeepSeek
 uv run mini-agent --workspace /path/to/my-project --model deepseek-chat
-
-# 开启详细诊断模式
-uv run mini-agent --verbose
 ```
+
+### REPL 交互快捷指令
+
+| 指令 | 说明 |
+| :--- | :--- |
+| **`/help`** | 显示指令与内置工具帮助说明 |
+| **`/sessions`** | 查看当前工作区的所有历史会话列表（ID、更新时间、轮数、摘要） |
+| **`/resume <id>`** | 切换并恢复指定历史会话 |
+| **`/new`** | 重置上下文，开启全新会话 |
+| **`/model [name]`** | 查看或临时切换当前模型（如 `/model deepseek-reasoner`） |
+| **`/clear`** | 清屏并置顶状态 Banner |
+| **`/exit, /quit`** | 优雅退出当前会话 |
 
 ---
 
