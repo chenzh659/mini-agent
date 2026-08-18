@@ -168,6 +168,7 @@ uv run mini-agent --workspace /path/to/my-project --model deepseek-chat
 
 | 工具名称 | 输入参数 | 核心功能 | 限制与约束 |
 | :--- | :--- | :--- | :--- |
+| **`search_code`** | `pattern`, `path` (默认 `.`), `is_regex`, `case_sensitive` | 全文正则代码检索 | 递归检索工作区文本文件，自动忽略 `.git`、`.venv`、`node_modules` 等；返回匹配文件路径、行号与内容片段。 |
 | **`list_files`** | `path` (默认 `.`), `max_depth` (1~5) | 列出工作区目录与文件 | 自动忽略 `.git`、`.venv`、`__pycache__`；跳过越界符号链接；上限 500 项。 |
 | **`read_file`** | `path` (相对路径) | 读取文本文件内容 | 仅允许工作区内相对路径（拦截绝对路径与 `..` 越界）；仅读取 UTF-8 文本；单文件大小上限 100 KiB。 |
 | **`edit_file`** | `path`, `target_content`, `replacement_content` | 精准局部修改代码 | 必须在文件中唯一匹配 `target_content`，避免歧义替换；工作区相对路径沙箱。 |

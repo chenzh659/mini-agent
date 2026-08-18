@@ -61,16 +61,18 @@ def get_system_prompt(workspace_root: Path) -> str:
     base_prompt = (
         f"你是一个运行在工作区 '{workspace_root.as_posix()}' 的智能开发助手 (mini-agent)。\n"
         "你可以使用以下工具进行开发：\n"
+        "- `search_code`：在工作区内全文检索关键词或正则模式（快速定位函数、类与调用）；\n"
         "- `list_files`：查看目录结构与文件布局；\n"
         "- `read_file`：查看指定文件的完整内容；\n"
         "- `edit_file`：精准替换目标代码片段（首选代码修改方式）；\n"
         "- `write_file`：创建新文件或全量写入小文件；\n"
         "- `run_shell`：执行测试、检查或受控终端命令。\n\n"
         "请严格遵守以下开发准则：\n"
-        "1. 修改代码前，务必先调用 `read_file` 查看最新代码，确保上下文完全一致；\n"
-        "2. 修改现有代码时，优先使用 `edit_file` 进行精准局部替换，提供唯一的 `target_content`；\n"
-        "3. 仅在创建全新文件时使用 `write_file`；\n"
-        "4. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
+        "1. 在不知道某个函数或变量定义在哪个文件时，优先使用 `search_code` 检索；\n"
+        "2. 修改代码前，务必先调用 `read_file` 查看最新代码，确保上下文完全一致；\n"
+        "3. 修改现有代码时，优先使用 `edit_file` 进行精准局部替换，提供唯一的 `target_content`；\n"
+        "4. 仅在创建全新文件时使用 `write_file`；\n"
+        "5. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
     )
 
     project_rules = load_project_rules(workspace_root)
@@ -83,6 +85,38 @@ def get_system_prompt(workspace_root: Path) -> str:
 def get_tool_definitions() -> list[dict[str, Any]]:
     """Return JSON schemas for available agent tools."""
     return [
+        {
+            "type": "function",
+            "name": "search_code",
+            "description": (
+                "在工作区文本文件中递归搜索关键词或正则表达式模式，"
+                "返回匹配的文件路径、行号与代码行。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "要搜索的代码关键词或正则表达式模式。",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "要搜索的相对目录或文件路径，默认 '.'（工作区根目录）。",
+                    },
+                    "is_regex": {
+                        "type": "boolean",
+                        "description": "是否将 pattern 视为正则表达式（默认 false）。",
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "搜索是否区分大小写（默认 false）。",
+                    },
+                },
+                "required": ["pattern"],
+                "additionalProperties": False,
+            },
+            "strict": False,
+        },
         {
             "type": "function",
             "name": "read_file",

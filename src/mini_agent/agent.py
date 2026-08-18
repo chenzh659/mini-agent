@@ -15,6 +15,7 @@ from mini_agent.models import (
     ListFilesInput,
     ReadFileInput,
     RunShellInput,
+    SearchCodeInput,
     ToolResult,
     WriteFileInput,
 )
@@ -24,7 +25,7 @@ from mini_agent.session import (
     generate_session_id,
     save_session,
 )
-from mini_agent.tools.filesystem import edit_file, list_files, read_file, write_file
+from mini_agent.tools.filesystem import edit_file, list_files, read_file, search_code, write_file
 from mini_agent.tools.shell import check_command_safety, run_shell
 
 
@@ -127,6 +128,21 @@ class Agent:
                 content="",
                 error=f"工具参数必须为 JSON 对象 (dict)，收到: {type(args).__name__}",
             )
+
+        if name == "search_code":
+            try:
+                inp = SearchCodeInput(**args)
+                return search_code(
+                    inp,
+                    workspace_root=self.config.workspace_root,
+                    max_output_chars=self.config.max_output_chars,
+                )
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"search_code 参数校验失败: {exc}",
+                )
 
         if name == "read_file":
             try:

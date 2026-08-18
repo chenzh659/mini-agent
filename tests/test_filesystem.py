@@ -10,6 +10,7 @@ from mini_agent.models import (
     EditFileInput,
     ListFilesInput,
     ReadFileInput,
+    SearchCodeInput,
     ToolResult,
     WriteFileInput,
 )
@@ -18,6 +19,7 @@ from mini_agent.tools.filesystem import (
     list_files,
     read_file,
     resolve_relative_path,
+    search_code,
     truncate_text,
     write_file,
 )
@@ -299,3 +301,67 @@ class TestTruncateHelper:
         assert "已省略" in text
         assert text.startswith("start")
         assert text.endswith("end")
+
+
+class TestSearchCode:
+    """Test search_code filesystem tool."""
+
+    def test_search_code_plain_text(self, tmp_path: Path) -> None:
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "main.py").write_text(
+            "def hello_world():\n    return 'hello'\n", encoding="utf-8"
+        )
+        (src_dir / "utils.py").write_text("HELLO_CONST = 100\n", encoding="utf-8")
+
+        inp = SearchCodeInput(pattern="hello")
+        res = search_code(inp, workspace_root=tmp_path)
+        assert res.ok is True
+        assert "main.py:1: def hello_world():" in res.content
+        assert "utils.py:1: HELLO_CONST = 100" in res.content
+        assert res.metadata["total_matches"] == 3
+
+    def test_search_code_case_sensitive(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "demo.py"
+        file_path.write_text("FooBar\nfoobar\nFOOBAR\n", encoding="utf-8")
+
+        inp = SearchCodeInput(pattern="FooBar", case_sensitive=True)
+        res = search_code(inp, workspace_root=tmp_path)
+        assert res.ok is True
+        assert res.metadata["total_matches"] == 1
+        assert "demo.py:1: FooBar" in res.content
+
+    def test_search_code_regex(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "router.py"
+        file_path.write_text(
+            "@app.get('/api/v1/users')\n@app.post('/api/v2/auth')\n", encoding="utf-8"
+        )
+
+        inp = SearchCodeInput(pattern=r"/api/v\d+/\w+", is_regex=True)
+        res = search_code(inp, workspace_root=tmp_path)
+        assert res.ok is True
+        assert res.metadata["total_matches"] == 2
+        assert "router.py:1:" in res.content
+        assert "router.py:2:" in res.content
+
+    def test_search_code_ignores_special_dirs(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text("secret_keyword = 1", encoding="utf-8")
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "app.py").write_text("secret_keyword = 2", encoding="utf-8")
+
+        inp = SearchCodeInput(pattern="secret_keyword")
+        res = search_code(inp, workspace_root=tmp_path)
+        assert res.ok is True
+        assert res.metadata["total_matches"] == 1
+        assert "src/app.py:1:" in res.content
+        assert ".git" not in res.content
+
+    def test_search_code_invalid_regex(self, tmp_path: Path) -> None:
+        inp = SearchCodeInput(pattern="[invalid(regex", is_regex=True)
+        res = search_code(inp, workspace_root=tmp_path)
+        assert res.ok is False
+        assert "正则表达式格式错误" in (res.error or "")

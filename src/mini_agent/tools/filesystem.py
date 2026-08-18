@@ -1,6 +1,7 @@
 """Safe filesystem tools for mini-agent."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from mini_agent.models import (
     EditFileInput,
     ListFilesInput,
     ReadFileInput,
+    SearchCodeInput,
     ToolResult,
     WriteFileInput,
 )
@@ -21,6 +23,35 @@ IGNORED_NAMES = {
     ".pytest_cache",
     ".ruff_cache",
     ".DS_Store",
+    "dist",
+    "build",
+}
+
+BINARY_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".whl",
+    ".pyc",
+    ".wasm",
+    ".bin",
+    ".dylib",
+    ".so",
+    ".exe",
+    ".dll",
+    ".mp4",
+    ".mp3",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
 }
 
 
@@ -395,4 +426,108 @@ def edit_file(input_data: EditFileInput, workspace_root: Path) -> ToolResult:
         content=f"已成功修改文件 '{input_data.path}'。",
         error=None,
         metadata={"path": input_data.path},
+    )
+
+
+def search_code(
+    input_data: SearchCodeInput,
+    workspace_root: Path,
+    max_output_chars: int = 12_000,
+) -> ToolResult:
+    """Recursively search for regex pattern or text across workspace text files."""
+    resolved_path, err = resolve_relative_path(workspace_root, input_data.path)
+    if err or resolved_path is None:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=err or "路径错误",
+            metadata={"path": input_data.path},
+        )
+
+    if not resolved_path.exists():
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"指定的搜索路径不存在: '{input_data.path}'",
+            metadata={"path": input_data.path},
+        )
+
+    flags = 0 if input_data.case_sensitive else re.IGNORECASE
+    try:
+        if input_data.is_regex:
+            pattern = re.compile(input_data.pattern, flags)
+        else:
+            pattern = re.compile(re.escape(input_data.pattern), flags)
+    except re.error as exc:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=f"正则表达式格式错误: '{input_data.pattern}' ({exc})",
+            metadata={"pattern": input_data.pattern},
+        )
+
+    files_to_search: list[Path] = []
+    if resolved_path.is_file():
+        files_to_search.append(resolved_path)
+    else:
+        for root, dirs, files in os.walk(resolved_path, topdown=True):
+            dirs[:] = [d for d in dirs if d not in IGNORED_NAMES]
+            for f in sorted(files):
+                if f in IGNORED_NAMES:
+                    continue
+                file_path = Path(root) / f
+                if file_path.suffix.lower() in BINARY_EXTENSIONS:
+                    continue
+                files_to_search.append(file_path)
+
+    matches: list[str] = []
+    files_searched = 0
+    resolved_root = workspace_root.resolve()
+
+    for fp in files_to_search:
+        if len(matches) >= input_data.max_results:
+            break
+        try:
+            if fp.stat().st_size > 1_000_000:
+                continue
+            with open(fp, encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            files_searched += 1
+            rel_p = fp.resolve().relative_to(resolved_root).as_posix()
+            for line_no, line in enumerate(lines, start=1):
+                if pattern.search(line):
+                    clean_line = line.rstrip("\r\n")
+                    matches.append(f"{rel_p}:{line_no}: {clean_line}")
+                    if len(matches) >= input_data.max_results:
+                        break
+        except OSError:
+            continue
+
+    if not matches:
+        return ToolResult(
+            ok=True,
+            content=(
+                f"未找到与模式 '{input_data.pattern}' 匹配的代码内容 "
+                f"(已检索 {files_searched} 个文件)。"
+            ),
+            metadata={
+                "pattern": input_data.pattern,
+                "total_matches": 0,
+                "files_searched": files_searched,
+            },
+        )
+
+    result_text = f"找到 {len(matches)} 处匹配代码 (已检索 {files_searched} 个文件):\n" + "\n".join(
+        f"- {m}" for m in matches
+    )
+    truncated, is_trunc = truncate_text(result_text, max_chars=max_output_chars)
+    return ToolResult(
+        ok=True,
+        content=truncated,
+        metadata={
+            "pattern": input_data.pattern,
+            "total_matches": len(matches),
+            "files_searched": files_searched,
+            "truncated": is_trunc,
+        },
     )

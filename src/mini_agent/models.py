@@ -129,3 +129,31 @@ class EditFileInput(BaseModel):
         ...,
         description="New replacement text to substitute for target_content.",
     )
+
+
+class SearchCodeInput(BaseModel):
+    """Input parameters for the search_code tool."""
+
+    pattern: str = Field(
+        ...,
+        min_length=1,
+        description="Search term or regular expression pattern to look for in code files.",
+    )
+    path: str = Field(
+        default=".",
+        description="Relative subdirectory or specific file path to search within workspace.",
+    )
+    is_regex: bool = Field(
+        default=False,
+        description="Whether to treat pattern as a regular expression.",
+    )
+    case_sensitive: bool = Field(
+        default=False,
+        description="Whether the search should be case-sensitive.",
+    )
+    max_results: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Maximum number of matched lines to return (default 50).",
+    )

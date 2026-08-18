@@ -56,7 +56,7 @@ def render_banner(
     content = Text()
     content.append("✦ ", style="bold cyan")
     content.append("MINI-AGENT", style="bold white")
-    content.append("  v0.1.0\n", style="dim")
+    content.append("  v0.2.0\n", style="dim")
     content.append("📁 工作区: ", style="bold bright_black")
     content.append(f"{workspace.as_posix()}\n", style="white")
     content.append("⚡ 模型:   ", style="bold bright_black")
@@ -111,7 +111,14 @@ class RichAgentEventListener(AgentEventListener):
             self.console.print()
             self._streamed_any = False
 
-        if tool_name == "read_file":
+        if tool_name == "search_code":
+            pattern = arguments.get("pattern", "")
+            path = arguments.get("path", ".")
+            self.console.print(
+                f"  [bold cyan]⚡ Tool: search_code[/bold cyan] "
+                f"[dim](模式: '{pattern}', 路径: {path})[/dim]"
+            )
+        elif tool_name == "read_file":
             path = arguments.get("path", "")
             self.console.print(
                 f"  [bold cyan]⚡ Tool: read_file[/bold cyan] [dim](路径: {path})[/dim]"
@@ -160,6 +167,10 @@ class RichAgentEventListener(AgentEventListener):
     def on_tool_finished(self, tool_name: str, result: ToolResult) -> None:
         if result.ok:
             metadata_parts: list[str] = []
+            if "total_matches" in result.metadata:
+                metadata_parts.append(f"{result.metadata['total_matches']} 处匹配")
+            if "files_searched" in result.metadata:
+                metadata_parts.append(f"检索 {result.metadata['files_searched']} 个文件")
             if "size_bytes" in result.metadata:
                 metadata_parts.append(f"{result.metadata['size_bytes']} 字节")
             if "bytes_written" in result.metadata:
@@ -223,6 +234,11 @@ def render_help(console: Console) -> None:
     tools_table.add_column("功能", style="white", width=26)
     tools_table.add_column("安全策略与约束", style="dim")
 
+    tools_table.add_row(
+        "search_code",
+        "全文正则代码检索",
+        "递归搜索关键词或正则，自动过滤 .git/.venv 等无关目录",
+    )
     tools_table.add_row(
         "list_files",
         "列出工作区目录结构",

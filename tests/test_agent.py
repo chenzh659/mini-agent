@@ -387,3 +387,28 @@ class TestAgentLoop:
         answer = agent2.step("你还记得我的名字吗？")
         assert "Alice" in answer
         assert agent2.session.meta.turn_count == 2
+
+    def test_agent_executes_search_code(self, tmp_path: Path) -> None:
+        (tmp_path / "service.py").write_text(
+            "def find_user_by_id(uid):\n    pass\n", encoding="utf-8"
+        )
+        fake_llm = FakeLLMClient(
+            [
+                LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="search_code",
+                            call_id="call_search_1",
+                            arguments='{"pattern": "find_user"}',
+                        )
+                    ]
+                ),
+                LLMResponse(text="找到函数 find_user_by_id 在 service.py 中。"),
+            ]
+        )
+        config = AgentConfig(workspace_root=tmp_path)
+        agent = Agent(config=config, llm_client=fake_llm)
+
+        answer = agent.step("查找用户函数在哪里")
+        assert "find_user_by_id" in answer
+        assert len(agent.history) >= 4
