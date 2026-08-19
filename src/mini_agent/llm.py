@@ -61,6 +61,7 @@ def get_system_prompt(workspace_root: Path) -> str:
     base_prompt = (
         f"你是一个运行在工作区 '{workspace_root.as_posix()}' 的智能开发助手 (mini-agent)。\n"
         "你可以使用以下工具进行开发：\n"
+        "- `get_repo_map`：生成项目级代码符号骨架地图（类名、函数签名与参数）；\n"
         "- `search_code`：在工作区内全文检索关键词或正则模式（快速定位函数、类与调用）；\n"
         "- `list_files`：查看目录结构与文件布局；\n"
         "- `read_file`：查看指定文件的完整内容；\n"
@@ -68,11 +69,12 @@ def get_system_prompt(workspace_root: Path) -> str:
         "- `write_file`：创建新文件或全量写入小文件；\n"
         "- `run_shell`：执行测试、检查或受控终端命令。\n\n"
         "请严格遵守以下开发准则：\n"
-        "1. 在不知道某个函数或变量定义在哪个文件时，优先使用 `search_code` 检索；\n"
-        "2. 修改代码前，务必先调用 `read_file` 查看最新代码，确保上下文完全一致；\n"
-        "3. 修改现有代码时，优先使用 `edit_file` 进行精准局部替换，提供唯一的 `target_content`；\n"
-        "4. 仅在创建全新文件时使用 `write_file`；\n"
-        "5. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
+        "1. 在分析大型项目时，可优先调用 `get_repo_map` 获取全局代码骨架；\n"
+        "2. 在不知道某个函数或变量定义在哪个文件时，优先使用 `search_code` 检索；\n"
+        "3. 修改代码前，务必先调用 `read_file` 查看最新代码，确保上下文完全一致；\n"
+        "4. 修改现有代码时，优先使用 `edit_file` 进行精准局部替换，提供唯一的 `target_content`；\n"
+        "5. 仅在创建全新文件时使用 `write_file`；\n"
+        "6. 所有文件路径必须相对于工作区根目录；工具执行完毕后，使用中文清晰解释修改的内容和原因。"
     )
 
     project_rules = load_project_rules(workspace_root)
@@ -85,6 +87,25 @@ def get_system_prompt(workspace_root: Path) -> str:
 def get_tool_definitions() -> list[dict[str, Any]]:
     """Return JSON schemas for available agent tools."""
     return [
+        {
+            "type": "function",
+            "name": "get_repo_map",
+            "description": (
+                "提取工作区各代码文件的类名、方法名与函数签名，"
+                "生成全局代码骨架拓扑地图 (Repo Map)。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "要生成代码地图的相对目录路径，默认 '.'（工作区根目录）。",
+                    }
+                },
+                "additionalProperties": False,
+            },
+            "strict": False,
+        },
         {
             "type": "function",
             "name": "search_code",

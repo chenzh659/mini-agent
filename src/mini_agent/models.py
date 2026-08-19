@@ -157,3 +157,12 @@ class SearchCodeInput(BaseModel):
         le=200,
         description="Maximum number of matched lines to return (default 50).",
     )
+
+
+class GetRepoMapInput(BaseModel):
+    """Input parameters for the get_repo_map tool."""
+
+    path: str = Field(
+        default=".",
+        description="Relative subdirectory or workspace path to extract symbols for.",
+    )

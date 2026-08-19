@@ -317,6 +317,17 @@ def write_file(input_data: WriteFileInput, workspace_root: Path) -> ToolResult:
             metadata={"path": input_data.path},
         )
 
+    from mini_agent.syntax_guard import validate_syntax
+
+    is_valid, syntax_err = validate_syntax(input_data.content, resolved_path)
+    if not is_valid:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=syntax_err,
+            metadata={"path": input_data.path, "syntax_error": True},
+        )
+
     try:
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         with open(resolved_path, mode="w", encoding="utf-8") as f:
@@ -409,6 +420,17 @@ def edit_file(input_data: EditFileInput, workspace_root: Path) -> ToolResult:
     new_content = original_content.replace(
         input_data.target_content, input_data.replacement_content, 1
     )
+
+    from mini_agent.syntax_guard import validate_syntax
+
+    is_valid, syntax_err = validate_syntax(new_content, resolved_path)
+    if not is_valid:
+        return ToolResult(
+            ok=False,
+            content="",
+            error=syntax_err,
+            metadata={"path": input_data.path, "syntax_error": True},
+        )
 
     try:
         with open(resolved_path, mode="w", encoding="utf-8") as f:

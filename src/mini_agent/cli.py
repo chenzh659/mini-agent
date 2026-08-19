@@ -111,7 +111,12 @@ class RichAgentEventListener(AgentEventListener):
             self.console.print()
             self._streamed_any = False
 
-        if tool_name == "search_code":
+        if tool_name == "get_repo_map":
+            path = arguments.get("path", ".")
+            self.console.print(
+                f"  [bold cyan]⚡ Tool: get_repo_map[/bold cyan] [dim](路径: {path})[/dim]"
+            )
+        elif tool_name == "search_code":
             pattern = arguments.get("pattern", "")
             path = arguments.get("path", ".")
             self.console.print(
@@ -234,6 +239,11 @@ def render_help(console: Console) -> None:
     tools_table.add_column("功能", style="white", width=26)
     tools_table.add_column("安全策略与约束", style="dim")
 
+    tools_table.add_row(
+        "get_repo_map",
+        "代码骨架地图提取 (Repo Map)",
+        "自动解析 Python / JS / TS 类与函数签名，构建项目骨架",
+    )
     tools_table.add_row(
         "search_code",
         "全文正则代码检索",

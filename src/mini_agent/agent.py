@@ -12,6 +12,7 @@ from mini_agent.llm import LLMClient, get_system_prompt, get_tool_definitions
 from mini_agent.models import (
     AgentConfig,
     EditFileInput,
+    GetRepoMapInput,
     ListFilesInput,
     ReadFileInput,
     RunShellInput,
@@ -19,6 +20,7 @@ from mini_agent.models import (
     ToolResult,
     WriteFileInput,
 )
+from mini_agent.repomap import generate_repo_map
 from mini_agent.session import (
     SessionData,
     SessionMeta,
@@ -128,6 +130,30 @@ class Agent:
                 content="",
                 error=f"工具参数必须为 JSON 对象 (dict)，收到: {type(args).__name__}",
             )
+
+        if name == "get_repo_map":
+            try:
+                inp = GetRepoMapInput(**args)
+                target_dir = self.config.workspace_root / inp.path
+                if not target_dir.exists():
+                    return ToolResult(
+                        ok=False,
+                        content="",
+                        error=f"指定的目录不存在: '{inp.path}'",
+                        metadata={"path": inp.path},
+                    )
+                repo_map = generate_repo_map(target_dir)
+                return ToolResult(
+                    ok=True,
+                    content=repo_map if repo_map else "未在当前目录发现有效的代码文件与符号。",
+                    metadata={"path": inp.path},
+                )
+            except ValidationError as exc:
+                return ToolResult(
+                    ok=False,
+                    content="",
+                    error=f"get_repo_map 参数校验失败: {exc}",
+                )
 
         if name == "search_code":
             try:
